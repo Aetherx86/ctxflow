@@ -1,0 +1,22 @@
+[project]
+name = "ctxflow"
+version = "0.2.0"
+description = "Token-frugal LLM workflow: reversible compression, gated advisor and a council protocol in one WASM kernel, with any provider or local model."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["wasmtime>=30"]   # runs kernel.wasm; everything else is stdlib
+
+[project.optional-dependencies]
+anthropic = ["anthropic"]
+
+[project.scripts]
+ctxflow = "ctxflow.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ctxflow"]
+artifacts = ["src/ctxflow/kernel.wasm", "src/ctxflow/web/**"]
+

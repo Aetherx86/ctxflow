@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Model replies and keys live on this page. Only same-origin code runs, and only https or this machine can be called. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self'; manifest-src 'self'; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>ctxflow</title>
+<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+</head>
+<body>
+<header>
+  <h1>ctxflow</h1>
+  <p id="statusLine" role="status">Starting…</p>
+</header>
+
+<main>
+  <section aria-labelledby="q">
+    <label id="q" for="question">What do you need decided?</label>
+    <textarea id="question" rows="4" placeholder="SQLite or Postgres for a single-user desktop app?"></textarea>
+
+    <div class="row">
+      <div class="dial" role="radiogroup" aria-label="How much to spend">
+        <button type="button" role="radio" data-mode="fast">Fast</button>
+        <button type="button" role="radio" data-mode="auto">Auto</button>
+        <button type="button" role="radio" data-mode="thorough">Thorough</button>
+      </div>
+      <button id="run" class="primary" type="button">Run</button>
+      <button id="cancel" type="button" hidden>Cancel</button>
+    </div>
+    <p id="hint" class="muted"></p>
+    <div id="confirm" class="notice" hidden>
+      <p id="confirmText"></p>
+      <button id="confirmGo" class="primary" type="button">Continue</button>
+      <button id="confirmNo" type="button">Not now</button>
+    </div>
+  </section>
+
+  <section id="results" hidden aria-live="polite">
+    <ol id="stages" class="stages"><li data-stage="1">Answers</li><li data-stage="2">Scoring</li><li data-stage="3">Decision</li></ol>
+    <div id="notices"></div>
+    <article id="decision" hidden>
+      <h2>Decision</h2>
+      <div id="decisionBody"></div>
+      <p id="decisionMeta" class="muted"></p>
+      <button id="copy" type="button">Copy</button>
+    </article>
+    <div id="matrixWrap" hidden>
+      <h2>Scores</h2>
+      <div class="scroll"><table id="matrix"></table></div>
+    </div>
+    <h2>Answers</h2>
+    <div id="answers"></div>
+  </section>
+
+  <details id="models">
+    <summary>Models</summary>
+    <p class="muted">Pick a starting point, then change any model. Different models check each other; copies of one model do not.</p>
+    <div id="profiles" class="row"></div>
+    <div id="seats"></div>
+    <datalist id="modelList"></datalist>
+  </details>
+
+  <details id="keys">
+    <summary>API keys</summary>
+    <p class="muted" id="keysNote"></p>
+    <div id="keyFields"></div>
+    <label class="check"><input type="checkbox" id="rememberKeys"> Remember on this device</label>
+  </details>
+
+  <details id="limits">
+    <summary>Spending limits</summary>
+    <div class="fields">
+      <label>Stop a run at <input id="limRun" type="number" min="0" step="1000"> tokens</label>
+      <label>Ask first above <input id="limAsk" type="number" min="0" step="1000"> tokens</label>
+      <label>Stop for the day at <input id="limDay" type="number" min="0" step="10000"> tokens</label>
+    </div>
+    <p class="muted">Local models do not count. Limits are checked before each stage, so the last stage can go slightly over.</p>
+  </details>
+</main>
+<script type="module" src="app.js"></script>
+</body>
+</html>

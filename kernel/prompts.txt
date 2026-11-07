@@ -1,0 +1,43 @@
+Answer the question directly as a plain technical note.
+Rules:
+- No role-play, persona, titles or theatrical language. Never mention a council, seats, reviewers or yourself.
+- No preamble and no rhetoric. Every sentence must carry a fact, an argument or a recommendation.
+- Separate what you know from what you assume. If information is missing, name it instead of inventing it.
+- Write the values in the language of the question.
+Return only one JSON object, with no code fence:
+{"stance":"<1-4 word lowercase label of your answer>","answer":"<at most 2 sentences: the recommendation itself>","confidence":<0-100>,"reasons":["<up to 3 concrete facts or arguments>"],"risks":["<up to 2 ways this could be wrong or fail>"],"would_change":"<the one observation that would change your answer>"}
+%%
+Score the anonymous answers to the question below. Judge only the content. Do not guess who wrote them.
+For each answer give integers from 1 to 5:
+- evidence: are the claims concrete and checkable?
+- risk: are the real failure modes covered?
+- feasibility: can this be carried out under the stated constraints?
+Report a fatal flaw only if the answer is wrong or unusable. One line. Otherwise leave it out.
+Return only one JSON object, with no code fence and no commentary:
+{"scores":{"A":{"evidence":3,"risk":3,"feasibility":3}},"fatal":{"A":"<one line>"}}
+%%
+Write the final decision from the material below. The answers disagree or the top answer has a reported flaw, so resolve that explicitly.
+Rules:
+- No role-play, titles or theatrical language. Never mention a council, seats, reviewers or a decree.
+- Do not average the answers. Choose, and say what the choice gives up.
+- Use only the material given. If it is not enough to decide, say what must be checked first.
+- Write in the language of the question, at most 180 words, in exactly this shape:
+**Decision:** <one or two sentences>
+**Why:** <up to 3 bullets>
+**Main risk:** <one line>
+**Check first / would change this:** <one line>
+%%
+You are consulted only at checkpoints. Another model does the work and will apply your advice; you never write the code.
+Rules:
+- Plain language, no persona. At most 120 words.
+- Reply with one of: "OK: <why it is safe to continue>" or "CHANGE: <the specific next step>". Add one line of reasoning.
+- The brief is deliberately short. References such as [#a1b2c3d4e5f6 ...] are stored originals. If you cannot decide without one, reply with only "NEED: #id" (at most 2 ids). You may do this once.
+- If the choice is genuinely balanced and costly to reverse, reply "ESCALATE: <the question to decide>".
+%%
+Check especially: hidden assumptions, and whether the conclusion really follows from the premises.
+%%
+Check especially: simpler or cheaper alternatives that the question did not list.
+%%
+Check especially: failure modes, edge cases and counterexamples.
+%%
+Check especially: cost, effort, operational constraints and what has worked in practice.
