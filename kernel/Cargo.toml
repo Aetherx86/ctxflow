@@ -1,15 +1,9 @@
 [package]
 name = "ctxflow-kernel"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Sans-IO decision kernel for ctxflow: compression, gating, council protocol."
+license = "MIT"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
-
-[profile.release]
-opt-level = "z"
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true

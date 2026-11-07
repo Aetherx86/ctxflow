@@ -80,7 +80,7 @@ Spend in this order. Each step is used only when the one before it is not enough
 
 1. Decide in code when you can. Compress with `ctxflow`, and restore originals with `ctxflow show <id>` instead of asking for files again.
 2. Search with `ctxflow scout "..."`. You get a summary with file:line references, not the search output.
-3. Ask the stronger model at checkpoints: `ctxflow advise plan "..."` before a plan, `ctxflow advise error "..."` with the log on stdin after a failure, and `ctxflow advise done` before finishing. Its gate stays silent unless the call is worth paying for.
+3. Ask the stronger model at checkpoints: `ctxflow advise plan "..."` before a plan, `ctxflow advise error --stdin "..."` with the log piped in after a failure, and `ctxflow advise done` before finishing. Its gate stays silent unless the call is worth paying for.
 4. For a costly choice that is hard to reverse, run `ctxflow council "..."`. It states the maximum cost first.
 
 `ctxflow mode fast|auto|thorough` sets how far this goes. Respect the user's choice of mode.

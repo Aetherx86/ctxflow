@@ -1,0 +1,164 @@
+# ctxflow settings
+# Models are written "<backend>:<model>":
+#   gemini | anthropic (your own API key) | claude (the signed-in Claude Code CLI)
+#   ollama | mlx | lmstudio (local, so nothing is removed from prompts)
+#   openai | openrouter | groq | deepseek | any OpenAI-compatible service added under [providers.*]
+#   ollama:auto means the first installed Ollama model
+
+[routing]
+# Candidates per kind of task, tried in order. Over budget or an error moves to the next one.
+# claude:haiku is the last resort when there is no GEMINI_API_KEY or Gemini limits are used up.
+light   = ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "claude:haiku"]
+summary = ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "claude:haiku"]
+heavy   = ["claude:sonnet", "gemini:gemini-3.8-flash"]
+advisor = ["claude:opus", "gemini:gemini-3.8-flash"]
+scout   = ["claude:haiku"]
+
+[context]
+keep_turns = 3                      # recent turns kept in compressed form after a fold
+fold_when_turns = 6                 # fold older turns into the summary at this many turns
+summarize_at_tokens = 6000          # or when the history passes this many tokens
+summary_max_lines = 10
+summary_max_refs = 30               # identifiers code puts back if a summary drops them
+max_attach_files = 1                # files per request (--force overrides)
+max_attach_tokens = 12000           # total attachment size; the rest is cut
+history_codeblock_max_lines = 12    # longer code blocks become stored references
+history_log_max_lines = 6           # longer runs of log lines become stored references
+state_files = ["SPEC.md", "PROGRESS.md"]
+handoff_file = "HANDOFF.md"
+handoff_hint_tokens = 60000         # suggest a handoff once a session has spent this much
+expected_output_tokens = 1500       # assumed reply size for budget checks
+
+[heuristics]
+heavy_keywords = [
+  "설계", "아키텍처", "디버그", "디버깅", "버그", "원인", "리팩터", "리팩토링", "보안", "성능",
+  "design", "architecture", "debug", "root cause", "refactor", "race", "deadlock",
+  "security", "performance", "why does", "why is",
+]
+heavy_min_prompt_tokens = 5000      # a larger assembled prompt counts as heavy
+
+[gemini]
+api_key_env = "GEMINI_API_KEY"
+endpoint = "https://generativelanguage.googleapis.com/v1beta/interactions"
+api_revision = "2026-05-20"
+thinking_level = "low"              # empty means the model default
+max_retries = 2
+timeout_sec = 180
+
+[council]
+max_tokens = 20000                  # per run; past it, later stages are skipped and the best so far is returned
+confirm_over = 15000                # ask first if the worst case is above this
+daily_tokens = 200000               # all cloud use per day; 0 means no limit
+agree_confidence = 70               # all models agree at this confidence: skip scoring
+clear_share = 0.75                  # this share of reviewers ranks one answer first: skip the final model
+
+[advisor]
+max_calls = 3                       # calls per session
+max_tokens = 6000                   # tokens per session
+brief_tokens = 1500                 # size of the brief; it never gets the whole conversation
+error_repeat = 2                    # times the same error must repeat before a call
+
+# Profiles: `ctxflow profile set <name>`. Without one, [routing] above applies.
+[profiles.local]
+about = "No key. Local models only. Free, but one model cannot really check itself."
+seats = ["ollama:auto", "ollama:auto", "ollama:auto"]
+chair = "ollama:auto"
+fallbacks = []
+routing = { light = ["ollama:auto"], summary = ["ollama:auto"], heavy = ["ollama:auto"], advisor = ["ollama:auto"], scout = [] }
+
+[profiles.free]
+about = "Gemini free tier, plus a local model if you have one."
+seats = ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3-flash-preview", "gemini:gemini-3.5-flash", "ollama:auto"]
+chair = "gemini:gemini-3.5-flash"
+fallbacks = ["gemini:gemini-3.1-flash-lite"]
+routing = { light = ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite"], summary = ["gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite"], heavy = ["gemini:gemini-3.8-flash", "gemini:gemini-3.5-flash"], advisor = ["gemini:gemini-3.8-flash", "gemini:gemini-3.5-flash"], scout = [] }
+
+[profiles.balanced]
+about = "Cheap models do the work; a stronger one is called only through the gate (Gemini + Claude Code)."
+seats = ["gemini:gemini-3.5-flash-lite", "claude:haiku", "gemini:gemini-3.5-flash", "ollama:auto"]
+chair = "claude:sonnet"
+fallbacks = ["gemini:gemini-3.1-flash-lite", "claude:haiku"]
+routing = { light = ["gemini:gemini-3.5-flash-lite", "claude:haiku"], summary = ["gemini:gemini-3.5-flash-lite", "claude:haiku"], heavy = ["claude:sonnet", "gemini:gemini-3.8-flash"], advisor = ["claude:opus", "gemini:gemini-3.8-flash"], scout = ["claude:haiku"] }
+
+[profiles.claude]
+about = "Only the signed-in Claude Code CLI."
+seats = ["claude:haiku", "claude:sonnet"]
+chair = "claude:opus"
+fallbacks = []
+routing = { light = ["claude:haiku"], summary = ["claude:haiku"], heavy = ["claude:sonnet"], advisor = ["claude:opus"], scout = ["claude:haiku"] }
+
+[profiles.api]
+about = "Your own API keys (ANTHROPIC_API_KEY, OPENROUTER_API_KEY)."
+seats = ["anthropic:claude-haiku-5-5", "openrouter:google/gemini-3.5-flash", "openrouter:deepseek/deepseek-v4.1-flash", "ollama:auto"]
+chair = "anthropic:claude-opus-5-5"
+fallbacks = []
+routing = { light = ["anthropic:claude-haiku-5-5"], summary = ["anthropic:claude-haiku-5-5"], heavy = ["anthropic:claude-sonnet-5-5"], advisor = ["anthropic:claude-opus-5-5"], scout = [] }
+
+[anthropic]
+base_url = "https://api.anthropic.com"
+api_key_env = "ANTHROPIC_API_KEY"
+effort = "low"                      # keeps short calls from spending on thinking; empty means the model default
+
+[providers.openai]
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.groq]
+base_url = "https://api.groq.com/openai/v1"
+api_key_env = "GROQ_API_KEY"
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[providers.lmstudio]
+base_url = "http://127.0.0.1:1234/v1"
+api_key_env = ""
+local = true
+
+[providers.mlx]
+base_url = "http://127.0.0.1:8080/v1"
+api_key_env = ""
+local = true
+
+[claude]
+binary = "claude"
+# --tools "": plain answers with no tools, which saves tokens. Remove it to let Claude edit files.
+# --disable-slash-commands: no skill list in the prompt, measured at ~3.4k down to ~0.6k input tokens per call.
+# --strict-mcp-config: no global MCP tool schemas in the prompt.
+extra_args = ["--tools", "", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"]
+timeout_sec = 900
+
+[ollama]
+host = "http://localhost:11434"
+timeout_sec = 600
+
+[budget]
+safety_ratio = 0.9                  # move to the next candidate at 90% of a limit
+
+# Your own limits per model. 0 or missing means no limit.
+# These numbers are conservative examples. Check real free-tier limits at
+# https://aistudio.google.com/rate-limit and adjust them.
+# rpd and tpd count from midnight Pacific, when Gemini resets daily quotas.
+[budget.models."gemini:gemini-3.5-flash-lite"]
+rpm = 15
+tpm = 250000
+rpd = 1000
+
+[budget.models."gemini:gemini-3.1-flash-lite"]
+rpm = 15
+tpm = 250000
+rpd = 1000
+
+[budget.models."gemini:gemini-3.8-flash"]
+rpm = 10
+tpm = 250000
+rpd = 250
+
+[budget.models."claude:sonnet"]
+rpm = 0
+tpd = 0

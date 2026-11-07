@@ -442,7 +442,7 @@ fn pii(t: &str, map: &mut Vec<V>) -> String {
     let b = t.as_bytes();
     let mut o = String::with_capacity(t.len());
     let mut i = 0;
-    let mut mark = |value: &str, kind: &str, map: &mut Vec<V>| -> String {
+    let mark = |value: &str, kind: &str, map: &mut Vec<V>| -> String {
         let m = format!("[REDACTED_{}_{}]", kind, map.len() + 1);
         map.push(obj(vec![("mark", st(&m)), ("value", st(value))]));
         m

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.0
+
+Changed
+- The host is now one Rust binary with the kernel linked in, for macOS, Linux and Windows. It needs no Python or `wasmtime`. Project files, sessions and the usage ledger keep their format, so existing projects continue to work.
+- `ctxflow advise` reads stdin only if data arrives within 0.2 s, so an open and silent stdin cannot hang it. `--stdin` waits for the end of input, for slow commands such as a build.
+- The kernel binary is now 134 KB, down from 170 KB, and no longer carries internal function names.
+- Config comments, profile descriptions and document templates are in English.
+
+Added
+- Anthropic API requests use API version `2026-10-21`, and `claude-opus-5-5`, `claude-opus-5`, `claude-fable-5-1` and `claude-sonnet-5-5` opt into the server-side refusal fallback.
+- `ctxflow scout` is now recorded in the usage ledger.
+- A release workflow that attaches binaries and the web app.
+- `README.ko.md`.
+
+Fixed
+- Floats in kernel JSON were cut to three decimals, which rounded small costs in the ledger to zero.
+- A number such as `1e999` from a model produced invalid JSON.
+- `api` profile model ids were checked against OpenRouter, and one that does not exist was replaced.
+- The browser no longer offers an `anthropic:` path it could not run.
+
+Removed
+- The Python host.
+
 ## 0.2.0
 
 Added

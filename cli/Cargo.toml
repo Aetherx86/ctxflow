@@ -1,0 +1,12 @@
+[package]
+name = "ctxflow"
+version = "0.3.0"
+edition = "2021"
+description = "Token-frugal LLM workflow: reversible compression, a gated advisor and a council protocol, with any provider or local model."
+license = "MIT"
+
+[dependencies]
+ctxflow-kernel = { path = "../kernel" }
+getrandom = "0.4"
+toml = { version = "1", default-features = false, features = ["parse", "std", "serde", "preserve_order"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }

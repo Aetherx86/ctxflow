@@ -12,9 +12,9 @@ const CHECKS = ['Logic check', 'Alternatives', 'Failure modes', 'Feasibility'];
 const BROWSER_PROFILES = {
   local: { about: 'No key. Local models only.', seats: ['ollama:auto', 'ollama:auto', 'ollama:auto'], chair: 'ollama:auto', fallbacks: [] },
   free: { about: 'Gemini free tier, plus a local model if you have one.', seats: ['gemini:gemini-3.5-flash-lite', 'gemini:gemini-3-flash-preview', 'gemini:gemini-3.5-flash', 'ollama:auto'], chair: 'gemini:gemini-3.5-flash', fallbacks: ['gemini:gemini-3.1-flash-lite'] },
-  openrouter: { about: 'One OpenRouter key, several vendors.', seats: ['openrouter:google/gemini-3.5-flash', 'openrouter:anthropic/claude-haiku-5.5', 'openrouter:deepseek/deepseek-chat', 'openrouter:qwen/qwen-3.8'], chair: 'openrouter:anthropic/claude-sonnet-5.5', fallbacks: [] }
+  openrouter: { about: 'One OpenRouter key, several vendors.', seats: ['openrouter:google/gemini-3.5-flash', 'openrouter:anthropic/claude-haiku-5.5', 'openrouter:deepseek/deepseek-v4.1-flash', 'openrouter:qwen/qwen3.8-flash'], chair: 'openrouter:anthropic/claude-sonnet-5.5', fallbacks: [] }
 };
-const MODEL_HINTS = ['ollama:auto', 'gemini:gemini-3.5-flash-lite', 'gemini:gemini-3-flash-preview', 'gemini:gemini-3.5-flash', 'gemini:gemini-3.8-flash', 'claude:haiku', 'claude:sonnet', 'claude:opus', 'mlx:', 'lmstudio:', 'openrouter:', 'openai:', 'groq:', 'deepseek:'];
+const MODEL_HINTS = ['ollama:auto', 'gemini:gemini-3.5-flash-lite', 'gemini:gemini-3-flash-preview', 'gemini:gemini-3.5-flash', 'gemini:gemini-3.8-flash', 'claude:haiku', 'claude:sonnet', 'claude:opus', 'anthropic:claude-haiku-5-5', 'anthropic:claude-sonnet-5-5', 'anthropic:claude-opus-5-5', 'mlx:', 'lmstudio:', 'openrouter:', 'openai:', 'groq:', 'deepseek:'];
 const KEYS = [['GEMINI_API_KEY', 'Gemini'], ['OPENROUTER_API_KEY', 'OpenRouter'], ['OPENAI_API_KEY', 'OpenAI'], ['GROQ_API_KEY', 'Groq'], ['DEEPSEEK_API_KEY', 'DeepSeek']];
 const MODE_HINT = {
   fast: 'Answers only. Takes the most confident one, without cross-checking.',
@@ -129,7 +129,7 @@ function buildKeys() {
     $('rememberKeys').parentElement.hidden = true;
     return;
   }
-  $('keysNote').textContent = 'Keys stay in this browser and go only to the provider you use. Local models need none. Anthropic needs `ctxflow serve`.';
+  $('keysNote').textContent = 'Keys stay in this browser and go only to the provider you use. Local models need none. Claude needs `ctxflow serve`.';
   $('rememberKeys').checked = store.get('rememberKeys', false);
   for (const [env, label] of KEYS) {
     const row = document.createElement('div'); row.className = 'seat';

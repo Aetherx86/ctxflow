@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check that the tag matches the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' cli/Cargo.toml | head -1)
+          test "v$version" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME does not match version $version"; exit 1; }
+      - name: Create the release and attach the web app
+        run: |
+          mkdir -p dist/web/engine
+          cp -R hosts/web/. dist/web/
+          cp hosts/js/dist/index.mjs hosts/js/dist/kernel.wasm dist/web/engine/
+          tar -czf "ctxflow-web-$GITHUB_REF_NAME.tar.gz" -C dist web
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "ctxflow-web-$GITHUB_REF_NAME.tar.gz"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  binary:
+    needs: create
+    name: ${{ matrix.target }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, musl: true, exe: ctxflow }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, musl: true, exe: ctxflow }
+          - { os: macos-latest, target: aarch64-apple-darwin, exe: ctxflow }
+          - { os: macos-latest, target: x86_64-apple-darwin, cross: true, exe: ctxflow }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, exe: ctxflow.exe }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build --release --locked -p ctxflow --target ${{ matrix.target }}
+      - if: ${{ !matrix.cross }}
+        shell: bash
+        run: target/${{ matrix.target }}/release/${{ matrix.exe }} --version
+      - name: Package and upload
+        shell: bash
+        run: |
+          name="ctxflow-$GITHUB_REF_NAME-${{ matrix.target }}"
+          mkdir "$name"
+          cp LICENSE README.md "target/${{ matrix.target }}/release/${{ matrix.exe }}" "$name/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+            gh release upload "$GITHUB_REF_NAME" "$name.zip"
+          else
+            tar -czf "$name.tar.gz" "$name"
+            gh release upload "$GITHUB_REF_NAME" "$name.tar.gz"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}

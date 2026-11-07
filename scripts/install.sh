@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Install the ctxflow CLI and link the Antigravity skill into the global skills dir.
+# Installs the ctxflow binary from source and links the skill for Antigravity.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 SKILLS="${HOME}/.gemini/config/skills"
 
-uv tool install -e "$HERE" --force
+cargo install --path "$HERE/cli" --root "${HOME}/.local" --locked --force
 
 mkdir -p "$SKILLS"
 ln -sfn "$HERE/skill/token-frugal-dev" "$SKILLS/token-frugal-dev"
-echo "linked skill → $SKILLS/token-frugal-dev"
-echo "uninstall: uv tool uninstall ctxflow && rm $SKILLS/token-frugal-dev"
-
+echo "installed: ${HOME}/.local/bin/ctxflow"
+echo "linked skill: $SKILLS/token-frugal-dev"
+echo "uninstall: cargo uninstall ctxflow --root ${HOME}/.local, then delete the skill link above"

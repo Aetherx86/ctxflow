@@ -10,6 +10,8 @@ fn json_roundtrip_unicode_and_depth() {
     let v = parse(r#"{"a":"한글\n😀","b":[1,2.5,true,null]}"#).unwrap();
     assert_eq!(v.get("a").s(), "한글\n😀");
     assert_eq!(parse(&v.dump()).unwrap(), v);
+    assert_eq!(parse("1e999").unwrap().dump(), "null");
+    assert_eq!(V::Num(0.0002459).dump(), "0.0002459");
     assert!(parse(&"[".repeat(200)).is_none());
     assert!(parse("{\"a\":").is_none());
 }
@@ -85,7 +87,7 @@ fn error_signature_ignores_volatile_values() {
 
 #[test]
 fn redact_removes_credentials_only() {
-    let t = "key sk-ant-abc123def456ghi789 and ghp_abcdefghijklmnop1234\nGEMINI_API_KEY=AQ.Ab8RN6K\nAuthorization: Bearer abcdefghijklmnop123\nrrn 900101-1234567\nsk-learn is a library, TOKEN=$TOKEN\nos.environ['API_KEY']\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\n";
+    let t = "key sk-ant-abc123def456ghi789 and ghp_abcdefghijklmnop1234\nGEMINI_API_KEY=AQ.Ab8RN6K\nAuthorization: Bearer abcdefghijklmnop123\nrrn 900101-1234567\nsk-learn is a library, TOKEN=$TOKEN\nos.environ['API_KEY']\n-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----\n"; // repo-guard: allow a fake key, for the redaction test
     let (r, m) = redact(t);
     for gone in ["sk-ant-abc123", "ghp_abc", "AQ.Ab8RN6K", "abcdefghijklmnop123", "900101-1234567", "MIIE"] {
         assert!(!r.contains(gone), "{gone} leaked: {r}");

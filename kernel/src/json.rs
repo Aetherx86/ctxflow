@@ -56,10 +56,12 @@ impl V {
             V::Null => o.push_str("null"),
             V::Bool(b) => o.push_str(if *b { "true" } else { "false" }),
             V::Num(n) => {
-                if *n == (*n as i64) as f64 {
+                if !n.is_finite() {
+                    o.push_str("null"); // JSON has no infinity, and "1e999" from a model parses to it
+                } else if *n == (*n as i64) as f64 {
                     o.push_str(&format!("{}", *n as i64));
                 } else {
-                    o.push_str(&format!("{:.3}", n));
+                    o.push_str(&format!("{}", n));
                 }
             }
             V::Str(s) => esc(s, o),

@@ -1,4 +1,4 @@
-// Provider I/O. No SDK is required except for the optional anthropic: backend.
+// Provider I/O for browsers and Electron. No SDK is required.
 
 export class ProviderError extends Error {}
 
@@ -94,37 +94,13 @@ async function ollamaAuto(host: string): Promise<string> {
   return names[0];
 }
 
-async function anthropic(model: string, c: any, signal?: AbortSignal) {
-  let mod: any;
-  try {
-    mod = await import('@anthropic-ai/sdk');
-  } catch {
-    throw new ProviderError('the anthropic: backend needs @anthropic-ai/sdk installed');
-  }
-  const client = new mod.default();
-  let msg: any;
-  try {
-    msg = await client.messages.create({
-      model,
-      max_tokens: Math.max(c.max_tokens * 3, 1024),
-      system: c.system,
-      messages: [{ role: 'user', content: c.prompt }],
-      output_config: { effort: 'low' }
-    }, { signal });
-  } catch (err: any) {
-    throw new ProviderError('anthropic: ' + (err?.message || err));
-  }
-  if (msg.stop_reason === 'refusal') throw new ProviderError('anthropic declined this request');
-  const u = msg.usage;
-  return {
-    text: msg.content.filter((b: any) => b.type === 'text').map((b: any) => b.text).join(''),
-    input: u.input_tokens + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
-    output: u.output_tokens
-  };
-}
-
 async function claudeCli(model: string, c: any, cfg: ProviderConfig, signal?: AbortSignal) {
-  const { spawn } = await import('node:child_process');
+  let spawn: any;
+  try {
+    spawn = (await import('node:child_process')).spawn;
+  } catch {
+    throw new ProviderError('claude: models need ctxflow serve when running in a browser');
+  }
   const args = ['-p', '--output-format', 'json', '--system-prompt', c.system, '--tools', '', '--no-session-persistence', '--disable-slash-commands', '--strict-mcp-config'];
   if (model && model !== 'default') args.push('--model', model);
   return new Promise<any>((resolve, reject) => {
@@ -165,7 +141,7 @@ export function makeTransport(cfg: ProviderConfig = {}) {
     if (backend === 'gemini') {
       r = await gemini(model, c, cfg, signal);
     } else if (backend === 'anthropic') {
-      r = await anthropic(model, c, signal);
+      throw new ProviderError('anthropic: models need ctxflow serve, which keeps the key out of the browser');
     } else if (backend === 'claude') {
       r = await claudeCli(model, c, cfg, signal);
     } else if (backend === 'ollama') {

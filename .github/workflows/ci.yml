@@ -1,29 +1,55 @@
 name: CI
-on: [push, pull_request]
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
-  kernel:
+  guard:
+    name: Supply chain checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - run: python3 .github/scripts/repo_guard.py .
+
+  kernel:
+    name: Kernel and WebAssembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - run: rustup target add wasm32-unknown-unknown
-      - run: cargo test
-        working-directory: kernel
-      - run: cargo build --release --target wasm32-unknown-unknown --lib
-        working-directory: kernel
-  hosts:
+      - run: cargo test -p ctxflow-kernel --locked
+      - run: cargo build -p ctxflow-kernel --release --target wasm32-unknown-unknown --lib --locked
+
+  host:
+    name: Host on ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - uses: actions/setup-node@v4
-        with: { node-version: "24" }
-      - run: pip install -e .
-      - run: python -m unittest discover -s tests
-      - run: node --no-warnings --test test/
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+      - run: cargo test -p ctxflow --locked
+      - name: JS host, from source
+        run: node --no-warnings --test test/
         working-directory: hosts/js
-        env: { CTXFLOW_HOST: ../dist/index.mjs }
+      - name: JS host, the obfuscated bundle the app ships
+        run: node --no-warnings --test test/
+        working-directory: hosts/js
+        env:
+          CTXFLOW_HOST: ../dist/index.mjs
