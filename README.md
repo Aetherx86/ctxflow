@@ -97,13 +97,15 @@ ctxflow status
 
 `scout` needs Claude Code. Its answer is short, but the search itself can read tens of thousands of input tokens, so it is not free.
 
+A `.ctxflow/config.toml` that came with a repository you cloned is not trusted. Read it, then run `ctxflow trust` (see [Security](#security)). `ctxflow trust --revoke` withdraws trust.
+
 ### Claude Code mod
 
 ```bash
 claude --plugin-dir mod --model haiku
 ```
 
-It shows state in the status line and calls `ctxflow advise` when a Bash command fails and when a turn ends. If the gate stays closed, there is no model call and nothing is added to the context. In a folder without `ctxflow init` it does nothing.
+It shows state in the status line and calls `ctxflow advise` when a Bash command fails and when a turn ends. If the gate stays closed, there is no model call and nothing is added to the context. In a folder without `ctxflow init`, or one whose config is not trusted, it does nothing.
 
 ### Skill
 
@@ -120,11 +122,18 @@ Settings are under `[council]` and `[advisor]` in `.ctxflow/config.toml`, or Spe
 
 ## Security
 
-- Prompts bound for a cloud model have API keys, tokens, private keys, email addresses, card numbers, Korean resident numbers, SSNs and phone numbers removed. This is rule-based and will not catch every format.
+- Prompts bound for a cloud model have API keys, tokens, private keys, passwords in URLs, email addresses, card numbers, Korean resident numbers, SSNs and phone numbers removed. This is rule-based and will not catch every format.
 - A local seat never falls back to a cloud model.
+- A project's `.ctxflow/config.toml` may come from a stranger. Until you run `ctxflow trust`, settings that could run a program, send a key or a prompt somewhere else, read files outside the project, or raise spending limits are ignored, and the mod's hooks stay silent. Trust covers the exact file, so any later edit needs `ctxflow trust` again. `ctxflow init` trusts the file it writes.
+- Files that ctxflow reads or writes must be plain paths inside the project. It does not follow symbolic links, and it writes new files instead of opening existing ones.
+- Git runs with fsmonitor, external diff tools and textconv filters turned off, and Claude Code runs with your user settings only, so a repository cannot run its own programs through either.
+- Hidden characters are removed from prompts, replies and terminal output: bidirectional controls, tag characters, variation selectors and zero-width characters.
+- Prompts mark quoted files, logs and other models' answers as data, not instructions, and each field of a council answer is kept to one line, so an answer cannot fake the labels that reviewers read. This lowers the risk of prompt injection but does not remove it.
+- A model name cannot start with `-`, so it cannot turn into a command-line option.
 - Model replies are drawn as text nodes only, and the page has a Content Security Policy.
-- `ctxflow serve` binds to loopback only and checks the token from its start-up URL, the Host header and the Origin header.
+- `ctxflow serve` binds to loopback only. The token in its start-up URL works once: the page exchanges it for a session token, so a copied URL is useless afterwards. It also checks the Host and Origin headers, and limits connections to 64 and each request to 20 seconds.
 - `.ctxflow/archive` stores originals as they were, including anything later removed from prompts. It is excluded from the project's git.
+- The tests include fuzzing of the kernel's JSON interface, and the local server has been fuzzed with malformed requests.
 
 ### What obfuscation does not do
 

@@ -24,7 +24,7 @@ test('a failed command asks the gate; silence adds nothing to the context', asyn
   stubs(on, () => '', calls)
   on('tool.call', () => ({ result: {}, isError: true, text: 'boom' }))
   const r = await $.tool.call({ tool: 'Bash', command: 'make' })
-  expect(calls[0].slice(0, 3)).toEqual(['ctxflow', 'advise', 'error'])
+  expect(calls[0].slice(0, 6)).toEqual(['ctxflow', 'advise', 'error', '--auto', '--stdin', '--'])
   expect(r.context).toBeUndefined()
 })
 

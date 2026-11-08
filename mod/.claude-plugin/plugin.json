@@ -1,1 +1,1 @@
-{ "name": "ctxflow", "version": "0.3.0", "description": "Status line for ctxflow, and a stronger model consulted only at gated checkpoints." }
+{"name": "ctxflow", "version": "0.3.0", "description": "Status line for ctxflow, and a stronger model consulted only at gated checkpoints.", "author": {"name": "Aetherx86", "url": "https://github.com/Aetherx86"}}

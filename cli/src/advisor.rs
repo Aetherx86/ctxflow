@@ -22,8 +22,16 @@ pub struct Advice {
 }
 
 fn working_diff(eng: &Engine) -> String {
+    // Git runs programs named in a repository's own config (fsmonitor, pager, external diff,
+    // textconv). Only trusted projects get a diff, and even then those hooks are switched off.
+    if !eng.cfg.get("trusted").b() {
+        return String::new();
+    }
     let Some(git) = find_in_path("git") else { return String::new() };
-    let args: Vec<String> = ["diff", "HEAD", "--stat", "-p"].iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = [
+        "-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "diff.external=", "--no-pager",
+        "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--stat", "-p",
+    ].iter().map(|s| s.to_string()).collect();
     match run_process(&git, &args, "", Some(&eng.p.root), Duration::from_secs(20)) {
         Ok(o) if o.ok => o.stdout,
         _ => String::new(),
@@ -119,7 +127,7 @@ pub fn scout(eng: &Engine, question: &str) -> R<Reply> {
     };
     let mut cfg = eng.cfg.clone();
     let mut claude = cfg.get("claude").clone();
-    let args = ["--tools", "Read,Grep,Glob", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"];
+    let args = ["--tools", "Read,Grep,Glob", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config", "--setting-sources", "user"];
     claude.set("extra_args", V::Arr(args.iter().map(|x| st(x)).collect()));
     claude.set("cwd", st(&eng.p.root.display().to_string()));
     cfg.set("claude", claude);

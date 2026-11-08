@@ -2,6 +2,7 @@
 //! Anything removed from a prompt is returned as a stub with its original bytes, so the host can
 //! store it by id and restore it exactly. Identifiers are pinned so an LLM summary cannot drop them.
 use crate::json::{obj, st, V};
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::{format, string::{String, ToString}, vec, vec::Vec};
 
 pub fn estimate(t: &str) -> usize {
@@ -19,6 +20,29 @@ pub fn estimate(t: &str) -> usize {
         }
     }
     other / 4 + cjk * 2 / 3 + 1
+}
+
+/// Characters a reader cannot see but a model or terminal acts on: Trojan Source bidi controls,
+/// Unicode tag characters and variation selectors used to smuggle hidden text, invisible fillers,
+/// and terminal control codes. Newline, carriage return and tab stay.
+pub fn is_hidden(c: char) -> bool {
+    let u = c as u32;
+    matches!(u,
+        0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F | 0x7F..=0x9F
+        | 0xAD | 0x34F | 0x61C | 0x115F | 0x1160 | 0x17B4 | 0x17B5 | 0x180B..=0x180F
+        | 0x200B | 0x200E | 0x200F | 0x202A..=0x202E | 0x2060..=0x2064 | 0x2066..=0x206F
+        | 0x3164 | 0xFE00..=0xFE0D | 0xFEFF | 0xFFA0 | 0xFFF9..=0xFFFB
+        | 0xE0000..=0xE007F | 0xE0100..=0xE01EF)
+}
+
+pub fn sanitize(t: &str) -> (String, usize) {
+    let mut removed = 0;
+    let out: String = t.chars().filter(|c| {
+        let hide = is_hidden(*c);
+        removed += hide as usize;
+        !hide
+    }).collect();
+    (out, removed)
 }
 
 pub fn hash_id(t: &str) -> String {
@@ -118,9 +142,9 @@ pub struct Out {
     pub stubs: Vec<V>,
 }
 
-fn stub(body: &str, kind: &str, stubs: &mut Vec<V>) -> String {
+fn stub(body: &str, kind: &str, stubs: &mut Vec<V>, ids: &mut BTreeSet<String>) -> String {
     let id = hash_id(body);
-    if !stubs.iter().any(|s| s.get("id").s() == id) {
+    if ids.insert(id.clone()) {
         stubs.push(obj(vec![("id", st(&id)), ("kind", st(kind)), ("body", st(body))]));
     }
     id
@@ -131,7 +155,9 @@ pub fn compress(input: &str, code_max: usize, log_max: usize) -> Out {
     let lines: Vec<&str> = text.split('\n').collect();
     let mut out: Vec<String> = Vec::new();
     let mut stubs = Vec::new();
-    let mut seen: Vec<(String, String)> = Vec::new();
+    let mut ids = BTreeSet::new();
+    // Indexed, so a hostile input with many blocks or log lines stays linear-logarithmic.
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
     let mut i = 0;
     let mut blanks = 0;
     while i < lines.len() {
@@ -146,20 +172,20 @@ pub fn compress(input: &str, code_max: usize, log_max: usize) -> Out {
             let n = j - i - 1;
             let raw = lines[i..=end].join("\n");
             let key = hash_id(&raw);
-            if let Some((_, first)) = seen.iter().find(|(k, _)| *k == key) {
+            if let Some(first) = seen.get(&key) {
                 out.push(format!("[same as {first}]"));
             } else if n > code_max {
-                let id = stub(&raw, "code", &mut stubs);
+                let id = stub(&raw, "code", &mut stubs, &mut ids);
                 let d = defs(&lines[i + 1..j]);
                 let kind = if lang.is_empty() { String::from("code") } else { format!("code:{lang}") };
                 let tail = if d.is_empty() { String::new() } else { format!("; defs: {}", d.join(", ")) };
                 out.push(format!("[#{id} {kind} {n} lines{tail}]"));
-                seen.push((key, format!("#{id}")));
+                seen.insert(key, format!("#{id}"));
             } else {
                 out.push(raw.clone());
                 if n >= 3 {
                     let h = hash_id(&raw);
-                    seen.push((key, format!("earlier block {}", &h[..6])));
+                    seen.insert(key, format!("earlier block {}", &h[..6]));
                 }
             }
             i = end + 1;
@@ -175,24 +201,25 @@ pub fn compress(input: &str, code_max: usize, log_max: usize) -> Out {
             if run.len() > log_max {
                 // Collapse repeats first. Lines that differ only in numbers are the same event.
                 let mut uniq: Vec<(String, &str, usize)> = Vec::new();
+                let mut index: BTreeMap<String, usize> = BTreeMap::new();
                 for r in run {
                     let n = normalize(r);
-                    if let Some(u) = uniq.iter_mut().find(|u| u.0 == n) {
-                        u.2 += 1;
-                    } else {
-                        uniq.push((n, r, 1));
+                    match index.get(&n) {
+                        Some(&i) => uniq[i].2 += 1,
+                        None => {
+                            index.insert(n.clone(), uniq.len());
+                            uniq.push((n, r, 1));
+                        }
                     }
                 }
-                let id = stub(&run.join("\n"), "log", &mut stubs);
+                let id = stub(&run.join("\n"), "log", &mut stubs, &mut ids);
                 out.push(format!("[#{id} log {} lines, {} distinct]", run.len(), uniq.len()));
                 let keep: Vec<&(String, &str, usize)> = if uniq.len() <= log_max {
                     uniq.iter().collect()
                 } else {
                     let mut k: Vec<&(String, &str, usize)> = vec![&uniq[0]];
-                    for u in uniq.iter().filter(|u| is_error(u.1)).take(log_max.saturating_sub(2)) {
-                        if !k.iter().any(|x| x.0 == u.0) {
-                            k.push(u);
-                        }
+                    for u in uniq.iter().skip(1).filter(|u| is_error(u.1)).take(log_max.saturating_sub(2)) {
+                        k.push(u);
                     }
                     let last = &uniq[uniq.len() - 1];
                     if !k.iter().any(|x| x.0 == last.0) {
@@ -230,8 +257,9 @@ const SKIP: &[&str] = &["if", "for", "while", "switch", "return", "print", "func
 /// The facts a summary may not lose: paths, calls, versions, hashes, error names, stub ids, figures.
 pub fn anchors(t: &str, max: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let add = |s: &str, out: &mut Vec<String>| {
-        if s.len() >= 2 && s.len() <= 140 && !out.iter().any(|x| x == s) && out.len() < max {
+    let mut have: BTreeSet<String> = BTreeSet::new();
+    let mut add = |s: &str, out: &mut Vec<String>| {
+        if s.len() >= 2 && s.len() <= 140 && out.len() < max && have.insert(s.to_string()) {
             out.push(s.to_string());
         }
     };
@@ -284,7 +312,11 @@ fn tokenlike(b: &[u8]) -> bool {
 
 /// Removes credentials and national ids before a prompt leaves the machine. Reversible by map.
 pub fn redact(t: &str) -> (String, Vec<V>) {
-    const PREFIX: &[&str] = &["sk-ant-", "sk-or-", "sk-", "ghp_", "gho_", "ghs_", "github_pat_", "glpat-", "AIza", "xoxb-", "xoxp-", "AKIA", "hf_", "gsk_"];
+    const PREFIX: &[&str] = &[
+        "sk-ant-", "sk-or-", "sk-", "sk_live_", "rk_live_", "ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_",
+        "glpat-", "AIza", "ya29.", "xoxb-", "xoxp-", "xoxa-", "xapp-", "AKIA", "ASIA", "hf_", "gsk_", "npm_",
+        "pypi-", "dop_v1_", "shpat_", "eyJ",
+    ];
     const NAMES: &[&str] = &["API_KEY", "APIKEY", "API-KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PRIVATE_KEY"];
     let mut map: Vec<V> = Vec::new();
     let put = |secret: &str, map: &mut Vec<V>| -> String {
@@ -392,8 +424,39 @@ pub fn redact(t: &str) -> (String, Vec<V>) {
             res.push_str(line);
         }
     }
+    let res = url_credentials(&res, &mut map);
     let out = pii(&res, &mut map);
     (out, map)
+}
+
+/// `scheme://user:password@host`: the password goes, the rest of the address stays readable.
+fn url_credentials(t: &str, map: &mut Vec<V>) -> String {
+    let mut out = String::with_capacity(t.len());
+    let mut rest = t;
+    while let Some(i) = rest.find("://") {
+        let (head, tail) = rest.split_at(i + 3);
+        out.push_str(head);
+        let end = tail.find(|c: char| c.is_whitespace() || matches!(c, '/' | '"' | '\'' | '`' | '>' | ')')).unwrap_or(tail.len());
+        let auth = &tail[..end];
+        if let Some(at) = auth.rfind('@') {
+            if let Some(colon) = auth[..at].find(':') {
+                let secret = &auth[colon + 1..at];
+                if !secret.is_empty() && !secret.starts_with("[REDACTED") {
+                    let mark = format!("[REDACTED_{}]", map.len() + 1);
+                    map.push(obj(vec![("mark", st(&mark)), ("value", st(secret))]));
+                    out.push_str(&auth[..colon + 1]);
+                    out.push_str(&mark);
+                    out.push_str(&tail[at..end]);
+                    rest = &tail[end..];
+                    continue;
+                }
+            }
+        }
+        out.push_str(auth);
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn luhn(d: &[u8]) -> bool {

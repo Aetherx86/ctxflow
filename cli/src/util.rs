@@ -48,7 +48,14 @@ pub fn stamp(sep: &str) -> String {
     format!("{y:04}{m:02}{d:02}{sep}{:02}{:02}{:02}", s / 3600, s % 3600 / 60, s % 60)
 }
 
+/// Text for a terminal: no control codes or hidden characters, so model output cannot set the
+/// clipboard, rewrite the title, fake a prompt or hide text with bidi controls.
+pub fn for_terminal(text: &str) -> String {
+    ctxflow_kernel::compress::sanitize(text).0.replace('\r', "")
+}
+
 pub fn dim(msg: &str) {
+    let msg = for_terminal(msg);
     if std::io::stderr().is_terminal() {
         eprintln!("\x1b[2m{msg}\x1b[0m");
     } else {
@@ -62,8 +69,9 @@ pub fn log(msg: &str) {
 
 /// Printing to a closed pipe (`ctxflow show x | head`) must not crash the program.
 pub fn say(text: &str) {
+    let shown = if std::io::stdout().is_terminal() { for_terminal(text) } else { text.to_string() };
     let mut out = std::io::stdout().lock();
-    let _ = out.write_all(text.as_bytes());
+    let _ = out.write_all(shown.as_bytes());
     let _ = out.write_all(b"\n");
     let _ = out.flush();
 }
@@ -87,6 +95,31 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
 
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Replaces a file without following a symlink planted at its path, and keeps it private.
+pub fn write_new(path: &Path, bytes: &[u8]) -> R<()> {
+    if fs_meta_is_link(path) || path.is_file() {
+        std::fs::remove_file(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    f.write_all(bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+pub fn fs_meta_is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
+/// The global folder that holds the ledger, the user's own config and trust records.
+pub fn ctxflow_home() -> PathBuf {
+    std::env::var_os("CTXFLOW_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".ctxflow"))
 }
 
 pub fn home_dir() -> Option<PathBuf> {
@@ -178,4 +211,17 @@ pub fn truncate_to_tokens(text: &str, max_tokens: usize) -> (String, bool) {
         }
     }
     (format!("{}\n… [ctxflow: truncated to fit token budget]", &text[..bounds[lo]]), true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_text_has_no_control_codes() {
+        let t = "ok \x1b]52;c;ZXZpbA==\x07 title\x1b]0;pwned\x07 \x1b[2Jcleared\r\nnext\tline \u{202E}rtl";
+        let shown = for_terminal(t);
+        assert!(!shown.contains('\x1b') && !shown.contains('\x07') && !shown.contains('\r') && !shown.contains('\u{202E}'));
+        assert!(shown.contains("next\tline"));
+    }
 }

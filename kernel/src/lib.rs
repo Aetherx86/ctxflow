@@ -43,6 +43,10 @@ pub fn dispatch(input: &str) -> String {
             obj(vec![("text", st(&s)), ("missing", V::Arr(m.iter().map(|a| st(a)).collect()))])
         }
         "error_sig" => obj(vec![("sig", st(&compress::error_sig(text)))]),
+        "sanitize" => {
+            let (t, n) = compress::sanitize(text);
+            obj(vec![("text", st(&t)), ("removed", V::Num(n as f64))])
+        }
         "redact" => {
             let (r, m) = compress::redact(text);
             obj(vec![("text", st(&r)), ("map", V::Arr(m))])

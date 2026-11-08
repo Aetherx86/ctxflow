@@ -1,10 +1,10 @@
 //! Project-local state: session (rolling summary + recent turns) and markdown state docs.
 //! The files keep the format of earlier versions, so existing projects continue to work.
 use crate::config::{CONFIG_DIR, CONFIG_FILE, DEFAULT_TOML};
-use crate::util::{hex, now, random_bytes, stamp, str_arr, strs, R};
+use crate::util::{fs_meta_is_link, hex, log, now, random_bytes, stamp, str_arr, strs, write_new, R};
 use ctxflow_kernel::json::{obj, parse, st, V};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const SPEC_TEMPLATE: &str = "# SPEC\n\n> Goals, constraints and design decisions that rarely change. The shorter this is, the fewer tokens every request uses.\n\n## Goals\n-\n\n## Constraints and stack\n-\n\n## Key decisions\n-\n";
 const PROGRESS_TEMPLATE: &str = "# PROGRESS\n\n> The single source of truth for current state. This document is the memory, not the chat history.\n\n## Current state\n-\n\n## Done\n-\n\n## Next\n1.\n\n## Known issues\n-\n";
@@ -92,7 +92,8 @@ impl Project {
     pub fn find(start: &Path) -> Self {
         let cur = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
         for p in cur.ancestors() {
-            if p.join(CONFIG_DIR).join(CONFIG_FILE).is_file() {
+            let dir = p.join(CONFIG_DIR);
+            if !fs_meta_is_link(&dir) && !fs_meta_is_link(&dir.join(CONFIG_FILE)) && dir.join(CONFIG_FILE).is_file() {
                 return Project::at(p.to_path_buf());
             }
         }
@@ -100,12 +101,33 @@ impl Project {
     }
 
     pub fn initialized(&self) -> bool {
-        self.dir.join(CONFIG_FILE).is_file()
+        !fs_meta_is_link(&self.dir) && !fs_meta_is_link(&self.dir.join(CONFIG_FILE)) && self.dir.join(CONFIG_FILE).is_file()
+    }
+
+    /// A path inside the project, given as a plain relative name, with no symlink anywhere on the
+    /// way. A cloned repository can plant `SPEC.md -> ~/.ssh/id_rsa` or `PROGRESS.md -> ~/.zshrc`;
+    /// those are refused instead of read and sent, or overwritten.
+    pub fn inside(&self, rel: &str) -> R<PathBuf> {
+        let rel_path = Path::new(rel);
+        if rel.is_empty() || !rel_path.components().all(|c| matches!(c, Component::Normal(_))) {
+            return Err(format!("{rel:?} must be a plain relative path inside the project"));
+        }
+        let mut cur = self.root.clone();
+        for part in rel_path.components() {
+            cur.push(part);
+            if fs_meta_is_link(&cur) {
+                return Err(format!("{} is a symlink; ctxflow does not follow links in a project", cur.display()));
+            }
+        }
+        Ok(cur)
     }
 
     pub fn init(&self, with_docs: bool) -> R<Vec<String>> {
+        if fs_meta_is_link(&self.dir) {
+            return Err(format!("{} is a symlink", self.dir.display()));
+        }
         let mut created = Vec::new();
-        let write = |path: &Path, text: &str| fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()));
+        let write = |path: &Path, text: &str| write_new(path, text.as_bytes());
         for sub in ["sessions", "backups"] {
             fs::create_dir_all(self.dir.join(sub)).map_err(|e| format!("{}: {e}", self.dir.display()))?;
         }
@@ -120,7 +142,7 @@ impl Project {
         }
         if with_docs {
             for (name, tpl) in [("SPEC.md", SPEC_TEMPLATE), ("PROGRESS.md", PROGRESS_TEMPLATE)] {
-                let p = self.root.join(name);
+                let p = self.inside(name)?;
                 if !p.exists() {
                     write(&p, tpl)?;
                     created.push(name.to_string());
@@ -135,20 +157,26 @@ impl Project {
     }
 
     pub fn load_session(&self) -> Session {
+        if fs_meta_is_link(&self.session_path()) {
+            return Session::new("");
+        }
         fs::read_to_string(self.session_path()).ok().and_then(|t| parse(&t)).map_or_else(|| Session::new(""), |v| Session::from_v(&v))
     }
 
     pub fn save_session(&self, s: &Session) -> R<()> {
+        self.inside(CONFIG_DIR)?;
         fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        // Our own temporary name: anything already there, a planted link included, is replaced.
         let tmp = self.dir.join("session.tmp");
-        fs::write(&tmp, s.to_v().dump()).map_err(|e| e.to_string())?;
+        write_new(&tmp, s.to_v().dump().as_bytes())?;
         fs::rename(&tmp, self.session_path()).map_err(|e| e.to_string())
     }
 
     pub fn archive_session(&self, s: &Session) -> R<PathBuf> {
-        let dest = self.dir.join("sessions").join(format!("{}-{}.json", stamp("-"), s.id));
+        self.inside(".ctxflow/sessions")?;
         fs::create_dir_all(self.dir.join("sessions")).map_err(|e| e.to_string())?;
-        fs::write(&dest, s.to_v().dump()).map_err(|e| e.to_string())?;
+        let dest = self.inside(&format!(".ctxflow/sessions/{}-{}-{}.json", stamp("-"), s.id, hex(&random_bytes::<2>())))?;
+        write_new(&dest, s.to_v().dump().as_bytes())?;
         Ok(dest)
     }
 
@@ -157,7 +185,7 @@ impl Project {
         if stubs.is_empty() {
             return Ok(());
         }
-        let d = self.dir.join("archive");
+        let d = self.inside(".ctxflow/archive")?;
         fs::create_dir_all(&d).map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
@@ -165,9 +193,13 @@ impl Project {
             let _ = fs::set_permissions(&d, fs::Permissions::from_mode(0o700));
         }
         for stub in stubs {
-            let path = d.join(stub.get("id").s());
+            let id = stub.get("id").s();
+            if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                continue;
+            }
+            let path = self.inside(&format!(".ctxflow/archive/{id}"))?;
             if !path.exists() {
-                fs::write(&path, stub.get("body").s()).map_err(|e| e.to_string())?;
+                write_new(&path, stub.get("body").s().as_bytes())?;
             }
         }
         Ok(())
@@ -178,22 +210,29 @@ impl Project {
         if ident.is_empty() || !ident.bytes().all(|b| b.is_ascii_alphanumeric()) {
             return None;
         }
-        fs::read_to_string(self.dir.join("archive").join(ident)).ok()
+        fs::read_to_string(self.inside(&format!(".ctxflow/archive/{ident}")).ok()?).ok()
     }
 
     pub fn read_doc(&self, name: &str) -> String {
-        fs::read_to_string(self.root.join(name)).unwrap_or_default()
+        match self.inside(name) {
+            Ok(p) => fs::read_to_string(p).unwrap_or_default(),
+            Err(e) => {
+                log(&format!("skipped {name}: {e}"));
+                String::new()
+            }
+        }
     }
 
     pub fn write_doc(&self, name: &str, content: &str) -> R<()> {
-        let p = self.root.join(name);
+        let p = self.inside(name)?;
         if p.exists() {
-            let backups = self.dir.join("backups");
-            fs::create_dir_all(&backups).map_err(|e| e.to_string())?;
+            self.inside(".ctxflow/backups")?;
+            fs::create_dir_all(self.dir.join("backups")).map_err(|e| e.to_string())?;
             let stem = p.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
             let ext = p.extension().map_or_else(String::new, |s| format!(".{}", s.to_string_lossy()));
-            fs::copy(&p, backups.join(format!("{stem}.{}{ext}", stamp("-")))).map_err(|e| e.to_string())?;
+            let backup = self.inside(&format!(".ctxflow/backups/{stem}.{}-{}{ext}", stamp("-"), hex(&random_bytes::<2>())))?;
+            write_new(&backup, &fs::read(&p).map_err(|e| e.to_string())?)?;
         }
-        fs::write(&p, format!("{}\n", content.trim_end())).map_err(|e| e.to_string())
+        write_new(&p, format!("{}\n", content.trim_end()).as_bytes())
     }
 }

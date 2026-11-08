@@ -130,7 +130,8 @@ binary = "claude"
 # --tools "": plain answers with no tools, which saves tokens. Remove it to let Claude edit files.
 # --disable-slash-commands: no skill list in the prompt, measured at ~3.4k down to ~0.6k input tokens per call.
 # --strict-mcp-config: no global MCP tool schemas in the prompt.
-extra_args = ["--tools", "", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"]
+# --setting-sources user: a cloned repository's .claude settings and hooks do not run here.
+extra_args = ["--tools", "", "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config", "--setting-sources", "user"]
 timeout_sec = 900
 
 [ollama]

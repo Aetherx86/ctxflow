@@ -2,7 +2,7 @@
 //! assembled by ctxflow, not the provider, which is what makes switching models mid-task free.
 use crate::http;
 use crate::util::{find_in_path, k, run_process, strs};
-use ctxflow_kernel::compress::estimate;
+use ctxflow_kernel::compress::{estimate, sanitize};
 use ctxflow_kernel::json::{obj, parse, st, V};
 use std::path::Path;
 use std::time::Duration;
@@ -49,11 +49,19 @@ pub fn is_local(backend: &str, cfg: &V) -> bool {
 
 pub fn call(spec: &str, system: &str, prompt: &str, cfg: &V, max_tokens: Option<u64>) -> Out {
     let (backend, model) = parse_spec(spec)?;
+    // A model name becomes a command-line argument for some backends.
+    if model.starts_with('-') || model.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(BackendError::new(format!("invalid model name {model:?}")));
+    }
+    // Hidden characters can carry instructions a person reviewing the input never sees.
+    let (clean_system, _) = sanitize(system);
+    let (clean_prompt, _) = sanitize(prompt);
+    let system = clean_system.as_str();
     let mut redacted = 0;
     let scrubbed;
-    let mut text = prompt;
+    let mut text = clean_prompt.as_str();
     if !is_local(&backend, cfg) {
-        let r = k("redact", vec![("text", st(prompt))]);
+        let r = k("redact", vec![("text", st(text))]);
         redacted = r.get("map").arr().len() as u64;
         scrubbed = r.get("text").s().to_string();
         text = &scrubbed;
@@ -67,7 +75,7 @@ pub fn call(spec: &str, system: &str, prompt: &str, cfg: &V, max_tokens: Option<
         other if matches!(cfg.get("providers").get(other), V::Obj(_)) => openai_compat(other, &model, system, text, cfg, max_tokens),
         other => Err(BackendError::new(format!("unknown backend {other:?}"))),
     }?;
-    res.text = strip_think(&res.text);
+    res.text = sanitize(&strip_think(&res.text)).0;
     res.redacted = redacted;
     Ok(res)
 }

@@ -95,6 +95,8 @@ async function ollamaAuto(host: string): Promise<string> {
 }
 
 async function claudeCli(model: string, c: any, cfg: ProviderConfig, signal?: AbortSignal) {
+  // The model name becomes a command-line argument.
+  if (model.startsWith('-') || /[\s\x00-\x1f]/.test(model)) throw new ProviderError('invalid model name');
   let spawn: any;
   try {
     spawn = (await import('node:child_process')).spawn;

@@ -12,7 +12,7 @@ mod util;
 
 use crate::engine::{AskOptions, Engine};
 use crate::state::{Project, Session};
-use crate::util::{dim, say, strs, R};
+use crate::util::{dim, for_terminal, say, strs, write_new, R};
 use ctxflow_kernel::compress::estimate;
 use ctxflow_kernel::json::V;
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,6 +27,7 @@ Usage: ctxflow [-C DIR] [--profile NAME] COMMAND [ARGS]
 
 Start
   init [--no-docs]            create .ctxflow/config.toml, SPEC.md, PROGRESS.md
+  trust [--revoke]            allow this project's config to change sensitive settings
   profile [list|set NAME|clear]  choose which providers to use
   mode [fast|auto|thorough]   fast: answers only. auto: the gate decides. thorough: full council
   serve [--port N] [--no-open]  open the app, with this machine's keys and models
@@ -38,7 +39,9 @@ Ask
 
 Decide
   council [MSG] [-o OPTION]... [-y] [-v] [--json]  independent answers, anonymous scoring, one decision
-  advise plan|error|done|manual [MSG] [--stdin]    ask the stronger model, if the gate allows it
+  advise plan|error|done|manual [MSG] [--stdin] [--auto]
+                              ask the stronger model, if the gate allows it.
+                              --auto stays silent in a project whose config is not trusted
   scout [MSG]                 cheap read-only repository search; returns a summary
 
 Keep state
@@ -182,6 +185,13 @@ impl Global {
             return Err("not initialized here. Run `ctxflow init` in the project root.".to_string());
         }
         let cfg = config::load(&p.root, self.profile.as_deref())?;
+        let ignored = strs(cfg.get("ignored"));
+        if !ignored.is_empty() {
+            dim(&format!(
+                "── this project's config sets {} — ignored until you read .ctxflow/config.toml and run `ctxflow trust`",
+                ignored.join(", ")
+            ));
+        }
         Ok(Engine { p, cfg })
     }
 
@@ -214,8 +224,16 @@ fn cmd_init(g: &Global, args: &[String]) -> R<()> {
         let start = g.start();
         Project::at(start.canonicalize().unwrap_or(start))
     };
+    let had_config = proj.initialized();
     let created = proj.init(!a.has("--no-docs"))?;
+    // A config this command wrote is the user's own. One that came with the repository is not.
+    if !had_config {
+        config::trust(&proj.root)?;
+    }
     say(&format!("ctxflow initialized at {}", proj.root.display()));
+    if had_config && !config::pending_sensitive(&proj.root)?.is_empty() {
+        say("  this project came with a config that changes sensitive settings; read it, then run `ctxflow trust`");
+    }
     for c in created {
         say(&format!("  + {c}"));
     }
@@ -390,8 +408,27 @@ fn cmd_council(g: &Global, args: &[String]) -> R<()> {
     run_council(&eng, &question, &CouncilFlags { options: a.many("--option"), yes: a.has("--yes"), json: a.has("--json"), verbose: a.has("--verbose"), auto: false })
 }
 
+fn cmd_trust(g: &Global, args: &[String]) -> R<()> {
+    let a = parse_args(args, &[("", "--revoke", false)])?;
+    let proj = g.initialized()?;
+    if a.has("--revoke") {
+        config::untrust(&proj.root);
+        say("trust revoked; sensitive settings in this project's config are ignored again");
+        return Ok(());
+    }
+    let pending = config::pending_sensitive(&proj.root)?;
+    config::trust(&proj.root)?;
+    if pending.is_empty() {
+        say("trusted. This config changes no sensitive settings.");
+    } else {
+        say(&format!("trusted. These settings now apply: {}", pending.join(", ")));
+    }
+    say("Any later edit to .ctxflow/config.toml needs `ctxflow trust` again.");
+    Ok(())
+}
+
 fn cmd_advise(g: &Global, args: &[String]) -> R<()> {
-    let a = parse_args(args, &[("", "--stdin", false)])?;
+    let a = parse_args(args, &[("", "--stdin", false), ("", "--auto", false)])?;
     let Some((trigger, rest)) = a.pos.split_first() else {
         return Err("advise needs a checkpoint: plan, error, done or manual".to_string());
     };
@@ -399,6 +436,11 @@ fn cmd_advise(g: &Global, args: &[String]) -> R<()> {
         return Err(format!("advise takes plan, error, done or manual, not {trigger:?}"));
     }
     let eng = g.engine(true)?;
+    // Hooks call this on their own. In a repository nobody has vouched for, they do nothing.
+    if a.has("--auto") && !eng.cfg.get("trusted").b() {
+        dim("── silent: this project's config is not trusted (run `ctxflow trust` after reading it)");
+        return Ok(());
+    }
     let mut question = rest.join(" ").trim().to_string();
     let mut error = piped_input(a.has("--stdin"));
     if trigger != "error" && !error.is_empty() && question.is_empty() {
@@ -545,7 +587,7 @@ fn cmd_chat(g: &Global, args: &[String]) -> R<()> {
                 Ok(())
             })();
             if let Err(e) = outcome {
-                eprintln!("ctxflow: {e}");
+                eprintln!("ctxflow: {}", for_terminal(&e));
             }
             continue;
         }
@@ -555,7 +597,7 @@ fn cmd_chat(g: &Global, args: &[String]) -> R<()> {
                 files.clear(); // attachments are one-shot: never re-sent on later turns
                 print_answer(&ans, false);
             }
-            Err(e) => eprintln!("ctxflow: {e}"),
+            Err(e) => eprintln!("ctxflow: {}", for_terminal(&e)),
         }
     }
 }
@@ -569,11 +611,11 @@ fn cmd_profile(g: &Global, args: &[String]) -> R<()> {
         Some("set") => {
             let Some(name) = a.pos.get(1) else { return Err("profile set needs a name".to_string()) };
             config::load(&proj.root, Some(name))?;
-            std::fs::write(&marker, format!("{name}\n")).map_err(|e| e.to_string())?;
+            write_new(&proj.inside(".ctxflow/profile")?, format!("{name}\n").as_bytes())?;
             say(&format!("profile = {name}"));
         }
         Some("clear") => {
-            let _ = std::fs::remove_file(&marker);
+            let _ = std::fs::remove_file(&marker); // removes a planted link itself, never its target
             say("profile cleared; using [routing] from config.toml");
         }
         None | Some("list") => {
@@ -607,7 +649,7 @@ fn cmd_mode(g: &Global, args: &[String]) -> R<()> {
         if !["fast", "auto", "thorough"].contains(&v.as_str()) {
             return Err(format!("mode takes fast, auto or thorough, not {v:?}"));
         }
-        std::fs::write(proj.dir.join("mode"), format!("{v}\n")).map_err(|e| e.to_string())?;
+        write_new(&proj.inside(".ctxflow/mode")?, format!("{v}\n").as_bytes())?;
     }
     say(&format!("mode = {}", config::load(&proj.root, None)?.get("mode").s()));
     Ok(())
@@ -625,8 +667,9 @@ fn cmd_line(g: &Global) -> R<()> {
     let today = ledger::total_today(&cfg);
     let pct = if daily > 0 { format!("{}%", today * 100 / daily) } else { today.to_string() };
     let profile = match cfg.get("active_profile").s() { "" => "default", p => p };
+    let trust = if cfg.get("trusted").b() { "" } else { " · not trusted" };
     say(&format!(
-        "{profile} · {} · {:.1}k · advisor {}/{} · today {pct}",
+        "{profile} · {} · {:.1}k · advisor {}/{} · today {pct}{trust}",
         cfg.get("mode").s(), s.spent_tokens as f64 / 1000.0, s.advisor.get("calls").n(0.0), cfg.get("advisor").get("max_calls").n(0.0)
     ));
     Ok(())
@@ -677,6 +720,7 @@ fn run() -> R<()> {
     }
     match cmd.as_str() {
         "init" => cmd_init(&g, rest),
+        "trust" => cmd_trust(&g, rest),
         "ask" => cmd_ask(&g, rest),
         "prompt" => cmd_prompt(&g, rest),
         "chat" => cmd_chat(&g, rest),
@@ -703,7 +747,7 @@ fn run() -> R<()> {
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("ctxflow: {e}");
+        eprintln!("ctxflow: {}", for_terminal(&e));
         std::process::exit(1);
     }
 }

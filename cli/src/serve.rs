@@ -2,7 +2,11 @@
 //!
 //! The page still runs the protocol in WASM. This only adds what a browser cannot do alone: reach
 //! the Claude Code CLI and keep keys out of the browser. It listens on loopback only and spends
-//! money on the caller's behalf, so every API call needs the token from the start-up URL.
+//! money on the caller's behalf, so every API call needs a session token.
+//!
+//! The start-up URL carries a one-time token. The page trades it for a session token on its first
+//! request, after which the URL is worthless: a copy left in terminal scrollback, shell history or
+//! a screen share opens nothing.
 use crate::backends::{self, ollama_auto};
 use crate::ledger;
 use crate::state::Project;
@@ -10,11 +14,17 @@ use crate::util::{find_in_path, hex, R};
 use ctxflow_kernel::json::{obj, parse, st, V};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const MAX_HEADER: usize = 64 * 1024;
 const MAX_BODY: usize = 8 * 1024 * 1024;
+/// More connections than a page ever opens; past this, new ones are closed at once.
+const MAX_CONNECTIONS: usize = 64;
+/// Total time to send a request, so a client trickling bytes cannot hold a thread.
+const REQUEST_DEADLINE: Duration = Duration::from_secs(20);
+const MAX_SESSIONS: usize = 8;
 const HTML: &str = "text/html; charset=utf-8";
 const JS: &str = "text/javascript; charset=utf-8";
 
@@ -45,9 +55,20 @@ pub fn detect(cfg: &V) -> V {
 struct Shared {
     root: String,
     cfg: V,
-    token: String,
+    bootstrap: Mutex<Option<String>>,
+    sessions: Mutex<Vec<String>>,
+    open: AtomicUsize,
     hosts: [String; 2],
     origins: [String; 2],
+}
+
+/// Decrements the open-connection count however the handler ends.
+struct Slot<'a>(&'a AtomicUsize);
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 struct Request {
@@ -64,13 +85,14 @@ impl Request {
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<Request> {
+    let deadline = Instant::now() + REQUEST_DEADLINE;
     let mut buf = Vec::with_capacity(4096);
     let mut chunk = [0u8; 8192];
     let head_end = loop {
         if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
             break i;
         }
-        if buf.len() > MAX_HEADER {
+        if buf.len() > MAX_HEADER || Instant::now() > deadline {
             return None;
         }
         let n = stream.read(&mut chunk).ok()?;
@@ -94,6 +116,9 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
         });
     }
     while body.len() < length {
+        if Instant::now() > deadline {
+            return None;
+        }
         let n = stream.read(&mut chunk).ok()?;
         if n == 0 {
             return None;
@@ -130,6 +155,36 @@ fn error_json(stream: &mut TcpStream, code: u16, msg: &str) {
 /// Same length, then every byte compared, so timing does not reveal how much of a guess matched.
 fn token_matches(given: &str, expected: &str) -> bool {
     given.len() == expected.len() && given.bytes().zip(expected.bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
+}
+
+fn new_token() -> Option<String> {
+    let mut secret = [0u8; 24];
+    getrandom::fill(&mut secret).ok()?;
+    Some(hex(&secret))
+}
+
+fn has_session(sh: &Shared, given: &str) -> bool {
+    let sessions = sh.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    sessions.iter().fold(false, |found, s| found | token_matches(given, s))
+}
+
+/// Trades the one-time start-up token for a session token. The start-up token stops working.
+fn open_session(stream: &mut TcpStream, sh: &Shared, given: &str) {
+    let mut boot = sh.bootstrap.lock().unwrap_or_else(|e| e.into_inner());
+    let valid = boot.as_deref().is_some_and(|b| token_matches(given, b));
+    if !valid {
+        return error_json(stream, 401, "this start-up link was already used; restart ctxflow serve for a new one");
+    }
+    let Some(session) = new_token() else {
+        return error_json(stream, 502, "no secure random source");
+    };
+    *boot = None;
+    let mut sessions = sh.sessions.lock().unwrap_or_else(|e| e.into_inner());
+    if sessions.len() >= MAX_SESSIONS {
+        sessions.remove(0);
+    }
+    sessions.push(session.clone());
+    respond_json(stream, 200, &obj(vec![("session", st(&session))]));
 }
 
 fn status(sh: &Shared) -> V {
@@ -204,7 +259,11 @@ fn handle(mut stream: TcpStream, sh: &Shared) {
     if req.header("origin").is_some_and(|o| !sh.origins.iter().any(|a| a == o)) {
         return error_json(&mut stream, 403, "bad origin");
     }
-    if req.path.starts_with("/api/") && !token_matches(req.header("x-ctxflow-token").unwrap_or(""), &sh.token) {
+    let given = req.header("x-ctxflow-token").unwrap_or("").to_string();
+    if req.method == "POST" && req.path == "/api/session" {
+        return open_session(&mut stream, sh, &given);
+    }
+    if req.path.starts_with("/api/") && !has_session(sh, &given) {
         return error_json(&mut stream, 401, "bad token");
     }
     match (req.method.as_str(), req.path.as_str()) {
@@ -233,28 +292,36 @@ fn open_browser(url: &str) {
 }
 
 pub fn serve(proj: &Project, cfg: V, port: u16, open: bool) -> R<()> {
-    let mut secret = [0u8; 24];
     // The token guards money and keys, so a weak fallback is not acceptable here.
-    getrandom::fill(&mut secret).map_err(|e| format!("no secure random source: {e}"))?;
+    let token = new_token().ok_or("no secure random source")?;
     let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("port {port}: {e}"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    let token = hex(&secret);
     let url = format!("http://127.0.0.1:{port}/?t={token}");
     let shared = Arc::new(Shared {
         root: proj.root.display().to_string(),
         cfg,
-        token,
+        bootstrap: Mutex::new(Some(token)),
+        sessions: Mutex::new(Vec::new()),
+        open: AtomicUsize::new(0),
         hosts: [format!("127.0.0.1:{port}"), format!("localhost:{port}")],
         origins: [format!("http://127.0.0.1:{port}"), format!("http://localhost:{port}")],
     });
-    println!("ctxflow app: {url}\nPress Ctrl+C to stop.");
+    println!("ctxflow app: {url}\nThe link works once; the page that opens it keeps the session. Press Ctrl+C to stop.");
     let _ = std::io::stdout().flush();
     if open {
         open_browser(&url);
     }
     for conn in listener.incoming().flatten() {
+        if shared.open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+            shared.open.fetch_sub(1, Ordering::SeqCst);
+            drop(conn);
+            continue;
+        }
         let sh = Arc::clone(&shared);
-        std::thread::spawn(move || handle(conn, &sh));
+        std::thread::spawn(move || {
+            let _slot = Slot(&sh.open);
+            handle(conn, &sh);
+        });
     }
     Ok(())
 }

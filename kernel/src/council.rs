@@ -1,7 +1,7 @@
 //! Council protocol as a sans-IO state machine. The host only performs the calls it is handed:
 //! start -> independent answers -> (agreement stops here) -> anonymous peer scoring -> matrix
 //! -> (clear winner stops here) -> one model resolves the disagreement.
-use crate::compress::{compress, estimate, hash_id};
+use crate::compress::{compress, estimate, hash_id, sanitize};
 use crate::json::{obj, parse_loose, st, V};
 use crate::prompt;
 use alloc::{format, string::{String, ToString}, vec, vec::Vec};
@@ -12,6 +12,13 @@ const CHAIR_TOKENS: f64 = 480.0;
 
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { s.chars().take(n).collect::<String>() + "..." }
+}
+
+/// Model text shown to another model or a person: no hidden characters, and on one line, so an
+/// answer cannot forge a label line such as "B: ..." in a reviewer's prompt.
+fn clean_line(s: &str, n: usize) -> String {
+    let (t, _) = sanitize(s);
+    clip(&t.split_whitespace().collect::<Vec<_>>().join(" "), n)
 }
 
 fn stance_norm(s: &str) -> String {
@@ -29,23 +36,23 @@ fn stance_norm(s: &str) -> String {
 
 fn parse_card(text: &str) -> V {
     let list = |v: &V, n: usize| -> V {
-        V::Arr(v.arr().iter().take(n).map(|x| st(&clip(x.s(), 240))).filter(|x| !x.s().is_empty()).collect())
+        V::Arr(v.arr().iter().take(n).map(|x| st(&clean_line(x.s(), 240))).filter(|x| !x.s().is_empty()).collect())
     };
     if let Some(j) = parse_loose(text) {
         if !j.get("answer").s().is_empty() {
             return obj(vec![
                 ("stance", st(&stance_norm(j.get("stance").s()))),
-                ("answer", st(&clip(j.get("answer").s(), 600))),
+                ("answer", st(&clean_line(j.get("answer").s(), 600))),
                 ("confidence", V::Num(j.get("confidence").n(50.0).clamp(0.0, 100.0))),
                 ("reasons", list(j.get("reasons"), 3)),
                 ("risks", list(j.get("risks"), 2)),
-                ("would_change", st(&clip(j.get("would_change").s(), 240))),
+                ("would_change", st(&clean_line(j.get("would_change").s(), 240))),
                 ("valid", V::Bool(true)),
             ]);
         }
     }
     // Local models often ignore the format. Keep the content; it just cannot count as agreement.
-    obj(vec![("stance", st("")), ("answer", st(&clip(text.trim(), 600))), ("confidence", V::Num(50.0)), ("reasons", V::Arr(vec![])), ("risks", V::Arr(vec![])), ("would_change", st("")), ("valid", V::Bool(false))])
+    obj(vec![("stance", st("")), ("answer", st(&clean_line(text, 600))), ("confidence", V::Num(50.0)), ("reasons", V::Arr(vec![])), ("risks", V::Arr(vec![])), ("would_change", st("")), ("valid", V::Bool(false))])
 }
 
 fn card_text(c: &V, label: &str) -> String {
@@ -141,13 +148,15 @@ pub fn step(i: &V) -> V {
     if let V::Obj(_) = i.get("start") {
         let s = i.get("start");
         let seats = s.get("seats").arr();
-        let question = s.get("question").s();
+        let (clean_q, _) = sanitize(s.get("question").s());
+        let question = clean_q.as_str();
         if seats.len() < 2 {
             return obj(vec![("error", st("a council needs at least 2 seats")), ("done", V::Bool(true))]);
         }
         let wc = worst_case(question, seats.len());
         let budget = s.get("limits").get("max_tokens").n(0.0);
         state = s.clone();
+        state.set("question", st(question));
         state.set("worst_case", V::Num(wc as f64));
         state.set("question_short", st(&compress(question, 12, 4).text));
         state.set("used", obj(vec![("in", V::Num(0.0)), ("out", V::Num(0.0))]));
@@ -299,7 +308,7 @@ pub fn step(i: &V) -> V {
                 totals.push((ci, g("evidence") + g("risk") + g("feasibility")));
                 let f = j.get("fatal").get(m.get("label").s()).s();
                 if !f.is_empty() {
-                    fatal[ci].push(clip(f, 160));
+                    fatal[ci].push(clean_line(f, 160));
                 }
             }
             if totals.is_empty() {
@@ -378,7 +387,7 @@ pub fn step(i: &V) -> V {
     let top_card = state.get("cards").arr().get(top).map(|c| card_md(c, korean)).unwrap_or_default();
     let res = match find("chair").filter(|r| r.get("error") == &V::Null && !r.get("text").s().is_empty()) {
         Some(r) => {
-            let t = r.get("text").s().to_string();
+            let (t, _) = sanitize(r.get("text").s());
             events.push(ev(vec![("type", st("chunk")), ("seat", V::Num(5.0)), ("text", st(&t))]));
             finish(&mut state, &mut events, "resolved", &t, "")
         }

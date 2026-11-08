@@ -2,7 +2,7 @@
 //! account rather than per repository.
 use crate::backends::is_local;
 use crate::config::model_budget;
-use crate::util::{civil_from_days, days_from_civil, home_dir, now};
+use crate::util::{civil_from_days, ctxflow_home, days_from_civil, now};
 use ctxflow_kernel::json::{obj, parse, st, V};
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 fn ledger_path() -> PathBuf {
-    let home = std::env::var_os("CTXFLOW_HOME").map(PathBuf::from).unwrap_or_else(|| home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".ctxflow"));
+    let home = ctxflow_home();
     let _ = fs::create_dir_all(&home);
     home.join("usage.jsonl")
 }

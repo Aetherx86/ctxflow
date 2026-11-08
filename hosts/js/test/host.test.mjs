@@ -133,3 +133,17 @@ test('OpenAI-compatible transport strips thinking and reads usage', async (t) =>
   assert.equal(r.input, 7);
   assert.equal(r.local, true);
 });
+
+test('a model name cannot become a command-line option', async () => {
+  const tr = makeTransport({});
+  await assert.rejects(tr('claude:--dangerously-skip-permissions', { system: 's', prompt: 'p', max_tokens: 10 }), /invalid model name/);
+});
+
+test('hidden characters in a question never reach the seats', async () => {
+  const seen = [];
+  const capture = async (model, call) => { seen.push(call.prompt); return { text: card('x'), input: 1, output: 1, local: false }; };
+  await runCouncil(kernel, capture, { question: 'pick\u202e one\u{E0041}\u{E0042}', seats: seats('a', 'b'), chair: { model: 'z' } });
+  for (const p of seen) {
+    assert.ok(!/[\u202e]|[\u{E0000}-\u{E007F}]/u.test(p), JSON.stringify(p));
+  }
+});

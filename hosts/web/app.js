@@ -32,11 +32,26 @@ const OUTCOME = {
   failed: 'No model answered.'
 };
 
+// The start-up link carries a one-time token. It is traded for a session token on first load,
+// so a copy of the link left in scrollback or a screen share opens nothing afterwards.
 const params = new URLSearchParams(location.search);
-const token = params.get('t') || sessionStorage.getItem('ctxflow.token') || '';
-if (params.get('t')) {
-  sessionStorage.setItem('ctxflow.token', token);
-  history.replaceState(null, '', location.pathname);   // keep the token out of history and screenshots
+const startToken = params.get('t') || '';
+if (startToken) history.replaceState(null, '', location.pathname);
+let token = '';
+try { token = sessionStorage.getItem('ctxflow.session') || ''; } catch {}
+let linkProblem = '';
+async function openSession() {
+  if (!startToken) return;
+  try {
+    const res = await fetch('/api/session', { method: 'POST', headers: { 'X-Ctxflow-Token': startToken } });
+    const data = await res.json();
+    if (res.ok && data.session) {
+      token = data.session;
+      try { sessionStorage.setItem('ctxflow.session', token); } catch {}
+    } else if (!token) {
+      linkProblem = data.error || 'This link no longer works.';
+    }
+  } catch {}
 }
 
 let kernel, companion = null, running = null, mode = store.get('mode', 'auto'), lastDecision = '';
@@ -321,6 +336,7 @@ async function execute(question, c) {
 async function boot() {
   const wasm = await fetch('engine/kernel.wasm');
   kernel = await loadKernel(await wasm.arrayBuffer());
+  await openSession();
   if (token) {
     try {
       const res = await fetch('/api/status', { headers: { 'X-Ctxflow-Token': token } });
@@ -340,6 +356,7 @@ async function boot() {
   $('confirmNo').addEventListener('click', () => { $('confirm').hidden = true; });
   $('copy').addEventListener('click', () => navigator.clipboard?.writeText(lastDecision));
   setMode(mode);
+  if (linkProblem && !companion) $('statusLine').textContent = 'browser only · ' + linkProblem;
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 boot().catch((e) => { $('statusLine').textContent = 'Could not start: ' + e.message; });
