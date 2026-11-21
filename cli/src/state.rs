@@ -7,7 +7,8 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const SPEC_TEMPLATE: &str = "# SPEC\n\n> Goals, constraints and design decisions that rarely change. The shorter this is, the fewer tokens every request uses.\n\n## Goals\n-\n\n## Constraints and stack\n-\n\n## Key decisions\n-\n";
-const PROGRESS_TEMPLATE: &str = "# PROGRESS\n\n> The single source of truth for current state. This document is the memory, not the chat history.\n\n## Current state\n-\n\n## Done\n-\n\n## Next\n1.\n\n## Known issues\n-\n";
+const PROGRESS_TEMPLATE: &str =
+    "# PROGRESS\n\n> The single source of truth for current state. This document is the memory, not the chat history.\n\n## Current state\n-\n\n## Done\n-\n\n## Next\n1.\n\n## Known issues\n-\n";
 
 #[derive(Clone)]
 pub struct Turn {
@@ -30,15 +31,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(summary: &str) -> Self {
-        Session {
-            id: hex(&random_bytes::<4>()),
-            started: now(),
-            summary: summary.to_string(),
-            turns: Vec::new(),
-            pending_progress: Vec::new(),
-            spent_tokens: 0,
-            advisor: V::Obj(Vec::new()),
-        }
+        Session { id: hex(&random_bytes::<4>()), started: now(), summary: summary.to_string(), turns: Vec::new(), pending_progress: Vec::new(), spent_tokens: 0, advisor: V::Obj(Vec::new()) }
     }
 
     fn from_v(v: &V) -> Self {
@@ -47,12 +40,12 @@ impl Session {
             id: v.get("id").s().to_string(),
             started: v.get("started").n(0.0),
             summary: v.get("summary").s().to_string(),
-            turns: v.get("turns").arr().iter().map(|t| Turn {
-                user: t.get("user").s().to_string(),
-                assistant: t.get("assistant").s().to_string(),
-                model: t.get("model").s().to_string(),
-                ts: t.get("ts").n(0.0),
-            }).collect(),
+            turns: v
+                .get("turns")
+                .arr()
+                .iter()
+                .map(|t| Turn { user: t.get("user").s().to_string(), assistant: t.get("assistant").s().to_string(), model: t.get("model").s().to_string(), ts: t.get("ts").n(0.0) })
+                .collect(),
             pending_progress: strs(v.get("pending_progress")),
             spent_tokens: v.get("spent_tokens").n(0.0) as u64,
             advisor: if matches!(advisor, V::Obj(_)) { advisor } else { V::Obj(Vec::new()) },
@@ -64,12 +57,7 @@ impl Session {
             ("id", st(&self.id)),
             ("started", V::Num(self.started)),
             ("summary", st(&self.summary)),
-            ("turns", V::Arr(self.turns.iter().map(|t| obj(vec![
-                ("user", st(&t.user)),
-                ("assistant", st(&t.assistant)),
-                ("model", st(&t.model)),
-                ("ts", V::Num(t.ts)),
-            ])).collect())),
+            ("turns", V::Arr(self.turns.iter().map(|t| obj(vec![("user", st(&t.user)), ("assistant", st(&t.assistant)), ("model", st(&t.model)), ("ts", V::Num(t.ts))])).collect())),
             ("pending_progress", str_arr(&self.pending_progress)),
             ("spent_tokens", V::Num(self.spent_tokens as f64)),
             ("advisor", self.advisor.clone()),

@@ -128,9 +128,7 @@ pub fn home_dir() -> Option<PathBuf> {
 
 pub fn find_in_path(name: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat", ""] } else { &[""] };
-    let candidates = |dir: &Path| -> Option<PathBuf> {
-        exts.iter().map(|e| dir.join(format!("{name}{e}"))).find(|p| p.is_file())
-    };
+    let candidates = |dir: &Path| -> Option<PathBuf> { exts.iter().map(|e| dir.join(format!("{name}{e}"))).find(|p| p.is_file()) };
     if name.contains('/') || name.contains('\\') {
         let p = PathBuf::from(name);
         return if p.is_file() { Some(p) } else { None };

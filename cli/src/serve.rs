@@ -138,7 +138,8 @@ fn respond(stream: &mut TcpStream, code: u16, ctype: &str, body: &[u8]) {
         429 => "Too Many Requests",
         _ => "Bad Gateway",
     };
-    let head = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n", body.len());
+    let head =
+        format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n", body.len());
     let _ = stream.write_all(head.as_bytes()).and_then(|()| stream.write_all(body));
 }
 
@@ -202,11 +203,7 @@ fn status(sh: &Shared) -> V {
         ("mode", cfg.get("mode").clone()),
         ("detect", detect(cfg)),
         ("today", V::Num(ledger::total_today(cfg) as f64)),
-        ("limits", obj(vec![
-            ("max_tokens", c.get("max_tokens").clone()),
-            ("confirm_over", c.get("confirm_over").clone()),
-            ("daily_tokens", c.get("daily_tokens").clone()),
-        ])),
+        ("limits", obj(vec![("max_tokens", c.get("max_tokens").clone()), ("confirm_over", c.get("confirm_over").clone()), ("daily_tokens", c.get("daily_tokens").clone())])),
     ])
 }
 
@@ -234,13 +231,11 @@ fn llm(stream: &mut TcpStream, sh: &Shared, body: &[u8]) {
             let input = if r.input_tokens > 0 { r.input_tokens } else { prompt.len() as u64 / 4 };
             let output = if r.output_tokens > 0 { r.output_tokens } else { r.text.len() as u64 / 4 };
             ledger::record(model, input, output, &format!("app/{}", req.get("kind").s()), r.estimated, &sh.root, r.cost_usd);
-            respond_json(stream, 200, &obj(vec![
-                ("text", st(&r.text)),
-                ("input", V::Num(input as f64)),
-                ("output", V::Num(output as f64)),
-                ("local", V::Bool(local)),
-                ("removed", V::Num(r.redacted as f64)),
-            ]));
+            respond_json(
+                stream,
+                200,
+                &obj(vec![("text", st(&r.text)), ("input", V::Num(input as f64)), ("output", V::Num(output as f64)), ("local", V::Bool(local)), ("removed", V::Num(r.redacted as f64))]),
+            );
         }
         Err(e) => error_json(stream, 502, &e.msg),
     }

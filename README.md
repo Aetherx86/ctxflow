@@ -234,6 +234,7 @@ The kernel is a state machine that performs no I/O. A host only makes the calls 
 ```bash
 scripts/build.sh                                  # kernel, JS host, app and binary
 cargo test --workspace
+cargo fmt --check && cargo clippy --workspace --all-targets
 cd hosts/js && node --no-warnings --test test/    # add CTXFLOW_HOST=../dist/index.mjs to test the bundle
 ```
 

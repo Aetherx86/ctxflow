@@ -360,11 +360,14 @@ fn budget_and_unknown_backends_fall_through() {
 #[test]
 fn sessions_from_the_python_version_still_load() {
     let p = Proj::new(ECHO_CFG);
-    p.write(".ctxflow/session.json", r#"{
+    p.write(
+        ".ctxflow/session.json",
+        r#"{
   "id": "abc12345", "started": 1794062667.9, "summary": "old summary",
   "turns": [{"user": "u", "assistant": "a", "model": "gemini:x", "ts": 1794062667.9}],
   "pending_progress": ["- d"], "spent_tokens": 42, "advisor": {"calls": 1}
-}"#);
+}"#,
+    );
     let r = p.run(&["prompt", "next"]);
     assert!(r.out.contains("old summary"));
     assert!(r.out.contains("[assistant (gemini:x)]"));
@@ -483,7 +486,8 @@ fn a_tie_goes_to_the_final_model() {
 #[test]
 fn a_failing_model_uses_its_fallback() {
     let m = mock(|r| if r.model() == "1" { (429, "{}".to_string()) } else { chat(&card("x")) });
-    let p = Proj::new(&format!("{COUNCIL_CFG}\n[profiles.fb]\nseats=[\"a:1\",\"b:2\"]\nchair=\"z:9\"\nfallbacks=[\"f:9\"]\nrouting={{light=[\"echo:l\"]}}\n{}", providers(&m.url, &["a", "b", "z", "f"])));
+    let p =
+        Proj::new(&format!("{COUNCIL_CFG}\n[profiles.fb]\nseats=[\"a:1\",\"b:2\"]\nchair=\"z:9\"\nfallbacks=[\"f:9\"]\nrouting={{light=[\"echo:l\"]}}\n{}", providers(&m.url, &["a", "b", "z", "f"])));
     assert!(p.run(&["profile", "set", "fb"]).ok);
     let r = result(&p.run(&["council", "--yes", "--json", "q"]));
     assert_eq!(r.get("mode").s(), "agreed");
@@ -621,13 +625,7 @@ fn the_advisor_can_pull_one_original_by_id() {
 
 #[test]
 fn escalation_follows_the_dial() {
-    let m = mock(|r| {
-        if r.system().contains("consulted only at checkpoints") {
-            chat("ESCALATE: pg or sqlite?")
-        } else {
-            chat(&card("pg"))
-        }
-    });
+    let m = mock(|r| if r.system().contains("consulted only at checkpoints") { chat("ESCALATE: pg or sqlite?") } else { chat(&card("pg")) });
     let cfg = format!("{COUNCIL_CFG}\n{}", providers(&m.url, &["a", "b", "c", "z"]));
     let p = Proj::new(&cfg);
     assert!(p.run(&["profile", "set", "t"]).ok);
@@ -655,7 +653,15 @@ fn fast_mode_keeps_the_advisor_silent() {
 
 #[test]
 fn thorough_mode_sends_plans_to_the_council() {
-    let m = mock(|r| if r.system().contains("final decision") { chat("**Decision:** go") } else if r.system().contains("Score") { chat("{}") } else { chat(&card("x")) });
+    let m = mock(|r| {
+        if r.system().contains("final decision") {
+            chat("**Decision:** go")
+        } else if r.system().contains("Score") {
+            chat("{}")
+        } else {
+            chat(&card("x"))
+        }
+    });
     let p = Proj::new(&format!("{COUNCIL_CFG}\n{}", providers(&m.url, &["a", "b", "c", "z"])));
     assert!(p.run(&["profile", "set", "t"]).ok);
     assert!(p.run(&["mode", "thorough"]).ok);
@@ -696,7 +702,9 @@ fn stdin_flag_waits_for_slow_input() {
 
 #[test]
 fn gemini_request_keeps_the_key_out_of_the_url_and_stores_nothing() {
-    let m = mock(|_| (200, "{\"steps\":[{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"hi from gemini\"}]}],\"usage\":{\"total_input_tokens\":7,\"total_output_tokens\":3,\"total_thought_tokens\":2,\"total_tokens\":12}}".to_string()));
+    let m = mock(|_| {
+        (200, "{\"steps\":[{\"type\":\"model_output\",\"content\":[{\"type\":\"text\",\"text\":\"hi from gemini\"}]}],\"usage\":{\"total_input_tokens\":7,\"total_output_tokens\":3,\"total_thought_tokens\":2,\"total_tokens\":12}}".to_string())
+    });
     let p = Proj::new(&format!("{ECHO_CFG}\n[gemini]\nendpoint = \"{}/v1beta/interactions\"\nmax_retries = 0\n", m.url));
     let no_key = p.run(&["ask", "q", "-m", "gemini:m1", "--no-remember"]);
     assert!(no_key.err.contains("$GEMINI_API_KEY is not set"));
@@ -982,7 +990,9 @@ fn the_server_calls_models_and_applies_limits() {
     assert_eq!(status.get("profiles").get("local").get("chair").s(), "ollama:auto");
     assert_eq!(status.get("profiles").get("local").get("routing"), &V::Null, "only what the page needs");
 
-    let call = |model: &str| request(sv.port, "POST", "/api/llm", &[auth], &format!("{{\"model\":\"{model}\",\"system\":\"s\",\"prompt\":\"key ghp_abcdefghijklmnop1234\",\"max_tokens\":50,\"kind\":\"card\"}}"));
+    let call = |model: &str| {
+        request(sv.port, "POST", "/api/llm", &[auth], &format!("{{\"model\":\"{model}\",\"system\":\"s\",\"prompt\":\"key ghp_abcdefghijklmnop1234\",\"max_tokens\":50,\"kind\":\"card\"}}"))
+    };
     let (code, _, body) = call("m:x");
     assert_eq!(code, 200, "{body}");
     let r = parse(&body).unwrap();
@@ -999,8 +1009,6 @@ fn the_server_calls_models_and_applies_limits() {
     assert_eq!(code, 200, "local models stay free: {body}");
     assert!(parse(&body).unwrap().get("text").s().contains("ghp_"));
 }
-
-
 
 // ── hostile repositories ─────────────────────────────────────────────────────────
 
@@ -1154,7 +1162,13 @@ fn criteria_mock() -> Mock {
             for line in r.prompt().lines() {
                 let b = line.as_bytes();
                 if b.len() > 3 && b[0].is_ascii_uppercase() && &b[1..3] == b": " {
-                    let (e, k, f) = if line.contains("one") { (5, 2, 5) } else if line.contains("two") { (3, 5, 3) } else { (1, 1, 1) };
+                    let (e, k, f) = if line.contains("one") {
+                        (5, 2, 5)
+                    } else if line.contains("two") {
+                        (3, 5, 3)
+                    } else {
+                        (1, 1, 1)
+                    };
                     parts.push(format!("\"{}\":{{\"evidence\":{e},\"risk\":{k},\"feasibility\":{f}}}", &line[..1]));
                 }
             }
@@ -1219,10 +1233,7 @@ fn council_estimate_calls_no_model() {
 #[test]
 fn stats_summarize_the_ledger_with_prices() {
     let m = council_mock(SPLIT, |line| if line.contains("two") { 5 } else { 2 });
-    let p = Proj::new(&format!(
-        "{COUNCIL_CFG}\n{}\n[pricing.\"a:1\"]\ninput_per_mtok = 1000000\noutput_per_mtok = 0\n",
-        providers(&m.url, &["a", "b", "c", "z"])
-    ));
+    let p = Proj::new(&format!("{COUNCIL_CFG}\n{}\n[pricing.\"a:1\"]\ninput_per_mtok = 1000000\noutput_per_mtok = 0\n", providers(&m.url, &["a", "b", "c", "z"])));
     assert!(p.run(&["profile", "set", "t"]).ok);
     let empty = result(&p.run(&["stats", "--json"]));
     assert_eq!(empty.get("entries").n(-1.0), 0.0);

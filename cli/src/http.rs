@@ -10,11 +10,7 @@ pub struct Resp {
 const MAX_RESPONSE: u64 = 64 * 1024 * 1024;
 
 fn agent(timeout_secs: u64) -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(timeout_secs)))
-        .http_status_as_error(false)
-        .build()
-        .into()
+    ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(timeout_secs))).http_status_as_error(false).build().into()
 }
 
 fn read(mut r: ureq::http::Response<ureq::Body>) -> R<Resp> {

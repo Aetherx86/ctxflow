@@ -243,10 +243,7 @@ fn ollama(model: &str, system: &str, prompt: &str, cfg: &V, max_tokens: Option<u
     let mut body = vec![
         ("model", st(&resolved)),
         ("stream", V::Bool(false)),
-        ("messages", V::Arr(vec![
-            obj(vec![("role", st("system")), ("content", st(system))]),
-            obj(vec![("role", st("user")), ("content", st(prompt))]),
-        ])),
+        ("messages", V::Arr(vec![obj(vec![("role", st("system")), ("content", st(system))]), obj(vec![("role", st("user")), ("content", st(prompt))])])),
     ];
     if let Some(m) = max_tokens {
         body.push(("options", obj(vec![("num_predict", V::Num(m.saturating_mul(3).max(1024) as f64))])));
@@ -276,13 +273,7 @@ fn openai_compat(name: &str, model: &str, system: &str, prompt: &str, cfg: &V, m
     if !env.is_empty() && key.is_empty() {
         return Err(BackendError::new(format!("${env} is not set")));
     }
-    let mut body = vec![
-        ("model", st(model)),
-        ("messages", V::Arr(vec![
-            obj(vec![("role", st("system")), ("content", st(system))]),
-            obj(vec![("role", st("user")), ("content", st(prompt))]),
-        ])),
-    ];
+    let mut body = vec![("model", st(model)), ("messages", V::Arr(vec![obj(vec![("role", st("system")), ("content", st(system))]), obj(vec![("role", st("user")), ("content", st(prompt))])]))];
     if let Some(m) = max_tokens {
         let limit = if p.get("local").b() { m.saturating_mul(3).max(1024) } else { m };
         body.push(("max_tokens", V::Num(limit as f64)));
@@ -298,15 +289,7 @@ fn openai_compat(name: &str, model: &str, system: &str, prompt: &str, cfg: &V, m
     let text = data.get("choices").arr().first().map_or("", |c| c.get("message").get("content").s()).to_string();
     let usage = data.get("usage");
     let (input, output) = (usage.get("prompt_tokens").n(0.0) as u64, usage.get("completion_tokens").n(0.0) as u64);
-    Ok(Reply {
-        text,
-        model: format!("{name}:{model}"),
-        input_tokens: input,
-        output_tokens: output,
-        total_tokens: input + output,
-        estimated: !matches!(usage, V::Obj(_)),
-        ..Reply::default()
-    })
+    Ok(Reply { text, model: format!("{name}:{model}"), input_tokens: input, output_tokens: output, total_tokens: input + output, estimated: !matches!(usage, V::Obj(_)), ..Reply::default() })
 }
 
 // ── Anthropic API with the user's own key. Rust has no official SDK, so this is raw HTTP. ──

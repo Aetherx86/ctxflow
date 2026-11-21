@@ -17,15 +17,8 @@ fn ledger_path() -> PathBuf {
 
 #[allow(clippy::too_many_arguments)]
 pub fn record(spec: &str, input: u64, output: u64, kind: &str, estimated: bool, project: &str, cost_usd: Option<f64>) {
-    let mut items = vec![
-        ("ts", V::Num(now())),
-        ("model", st(spec)),
-        ("in", V::Num(input as f64)),
-        ("out", V::Num(output as f64)),
-        ("kind", st(kind)),
-        ("est", V::Bool(estimated)),
-        ("project", st(project)),
-    ];
+    let mut items =
+        vec![("ts", V::Num(now())), ("model", st(spec)), ("in", V::Num(input as f64)), ("out", V::Num(output as f64)), ("kind", st(kind)), ("est", V::Bool(estimated)), ("project", st(project))];
     if let Some(c) = cost_usd {
         items.push(("cost_usd", V::Num(c)));
     }
@@ -47,7 +40,11 @@ fn pacific_offset(t: i64) -> i64 {
     let (year, _, _) = civil_from_days((t - 8 * 3600).div_euclid(86400));
     let starts = nth_sunday(year, 3, 2) * 86400 + 10 * 3600; // 02:00 PST
     let ends = nth_sunday(year, 11, 1) * 86400 + 9 * 3600; // 02:00 PDT
-    if t >= starts && t < ends { -7 * 3600 } else { -8 * 3600 }
+    if t >= starts && t < ends {
+        -7 * 3600
+    } else {
+        -8 * 3600
+    }
 }
 
 /// Gemini daily quotas reset at midnight Pacific.
@@ -105,10 +102,14 @@ pub fn usage_window() -> BTreeMap<String, Usage> {
 
 /// All tokens spent since the daily reset, across models. Local models cost nothing.
 pub fn total_today(cfg: &V) -> u64 {
-    entries_since(pacific_midnight(now())).iter().filter(|e| {
-        let backend = e.get("model").s().split(':').next().unwrap_or("");
-        backend != "echo" && !is_local(backend, cfg)
-    }).map(|e| e.get("in").n(0.0) as u64 + e.get("out").n(0.0) as u64).sum()
+    entries_since(pacific_midnight(now()))
+        .iter()
+        .filter(|e| {
+            let backend = e.get("model").s().split(':').next().unwrap_or("");
+            backend != "echo" && !is_local(backend, cfg)
+        })
+        .map(|e| e.get("in").n(0.0) as u64 + e.get("out").n(0.0) as u64)
+        .sum()
 }
 
 /// (reason, minute_only). No reason means the call fits. minute_only means waiting is an option.
@@ -190,34 +191,52 @@ impl StatsReport {
     }
 
     pub fn to_v(&self) -> V {
-        let models: Vec<V> = self.by_model.iter().map(|(model, s)| obj(vec![
-            ("model", st(model)),
-            ("calls", V::Num(s.calls as f64)),
-            ("in", V::Num(s.input as f64)),
-            ("out", V::Num(s.output as f64)),
-            ("total", V::Num((s.input + s.output) as f64)),
-            ("local", V::Bool(s.local)),
-            ("recorded_cost_usd", V::Num(s.recorded_cost_usd)),
-            ("estimated_cost_usd", V::Num(s.estimated_cost_usd)),
-            ("cost_usd", V::Num(s.recorded_cost_usd + s.estimated_cost_usd)),
-        ])).collect();
-        let kinds: Vec<V> = self.by_kind.iter().map(|(kind, s)| obj(vec![
-            ("kind", st(kind)),
-            ("calls", V::Num(s.calls as f64)),
-            ("in", V::Num(s.input as f64)),
-            ("out", V::Num(s.output as f64)),
-            ("total", V::Num((s.input + s.output) as f64)),
-            ("cost_usd", V::Num(s.cost_usd)),
-        ])).collect();
-        let daily: Vec<V> = self.by_day.iter().map(|(day, s)| obj(vec![
-            ("date", st(day)),
-            ("calls", V::Num(s.calls as f64)),
-            ("in", V::Num(s.input as f64)),
-            ("out", V::Num(s.output as f64)),
-            ("cloud_tokens", V::Num(s.cloud_tokens as f64)),
-            ("local_tokens", V::Num(s.local_tokens as f64)),
-            ("cost_usd", V::Num(s.cost_usd)),
-        ])).collect();
+        let models: Vec<V> = self
+            .by_model
+            .iter()
+            .map(|(model, s)| {
+                obj(vec![
+                    ("model", st(model)),
+                    ("calls", V::Num(s.calls as f64)),
+                    ("in", V::Num(s.input as f64)),
+                    ("out", V::Num(s.output as f64)),
+                    ("total", V::Num((s.input + s.output) as f64)),
+                    ("local", V::Bool(s.local)),
+                    ("recorded_cost_usd", V::Num(s.recorded_cost_usd)),
+                    ("estimated_cost_usd", V::Num(s.estimated_cost_usd)),
+                    ("cost_usd", V::Num(s.recorded_cost_usd + s.estimated_cost_usd)),
+                ])
+            })
+            .collect();
+        let kinds: Vec<V> = self
+            .by_kind
+            .iter()
+            .map(|(kind, s)| {
+                obj(vec![
+                    ("kind", st(kind)),
+                    ("calls", V::Num(s.calls as f64)),
+                    ("in", V::Num(s.input as f64)),
+                    ("out", V::Num(s.output as f64)),
+                    ("total", V::Num((s.input + s.output) as f64)),
+                    ("cost_usd", V::Num(s.cost_usd)),
+                ])
+            })
+            .collect();
+        let daily: Vec<V> = self
+            .by_day
+            .iter()
+            .map(|(day, s)| {
+                obj(vec![
+                    ("date", st(day)),
+                    ("calls", V::Num(s.calls as f64)),
+                    ("in", V::Num(s.input as f64)),
+                    ("out", V::Num(s.output as f64)),
+                    ("cloud_tokens", V::Num(s.cloud_tokens as f64)),
+                    ("local_tokens", V::Num(s.local_tokens as f64)),
+                    ("cost_usd", V::Num(s.cost_usd)),
+                ])
+            })
+            .collect();
         obj(vec![
             ("days", self.days.map_or(V::Null, |d| V::Num(d as f64))),
             ("project", self.project.as_deref().map_or(V::Null, st)),
@@ -242,7 +261,11 @@ impl StatsReport {
 
 fn nonneg_u64(v: &V) -> u64 {
     let n = v.n(0.0);
-    if n.is_finite() && n > 0.0 { n as u64 } else { 0 }
+    if n.is_finite() && n > 0.0 {
+        n as u64
+    } else {
+        0
+    }
 }
 
 fn nonneg_f64(v: &V) -> Option<f64> {
@@ -310,7 +333,10 @@ pub fn summarize_text(text: &str, cfg: &V, now_ts: f64, days: Option<u64>, proje
         let input = nonneg_u64(e.get("in"));
         let output = nonneg_u64(e.get("out"));
         let total = input.saturating_add(output);
-        let kind = match e.get("kind").s() { "" => "other", k => k };
+        let kind = match e.get("kind").s() {
+            "" => "other",
+            k => k,
+        };
         let backend = model.split(':').next().unwrap_or("");
         let local = backend == "echo" || is_local(backend, cfg);
         let (rec_cost, est_cost) = match nonneg_f64(e.get("cost_usd")) {
@@ -408,11 +434,7 @@ mod tests {
     fn summarize_aggregates_models_kinds_pricing_and_skips_garbage() {
         let now_ts = utc(2026, 11, 21, 12) as f64;
         let old_ts = utc(2026, 11, 1, 12) as f64;
-        let cfg = obj(vec![
-            ("pricing", obj(vec![
-                ("gemini:flash", obj(vec![("input_per_mtok", V::Num(1.0)), ("output_per_mtok", V::Num(4.0))])),
-            ])),
-        ]);
+        let cfg = obj(vec![("pricing", obj(vec![("gemini:flash", obj(vec![("input_per_mtok", V::Num(1.0)), ("output_per_mtok", V::Num(4.0))]))]))]);
         let lines = format!(
             "{{\"ts\":{now_ts},\"model\":\"gemini:flash\",\"in\":1000000,\"out\":500000,\"kind\":\"ask/light\",\"project\":\"/repoA\"}}\n\
              {{\"ts\":{now_ts},\"model\":\"claude:sonnet\",\"in\":2000,\"out\":1000,\"kind\":\"ask/heavy\",\"project\":\"/repoA\",\"cost_usd\":0.025}}\n\

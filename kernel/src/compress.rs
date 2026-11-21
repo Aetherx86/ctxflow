@@ -3,7 +3,12 @@
 //! store it by id and restore it exactly. Identifiers are pinned so an LLM summary cannot drop them.
 use crate::json::{obj, st, V};
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::{format, string::{String, ToString}, vec, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 pub fn estimate(t: &str) -> usize {
     if t.is_empty() {
@@ -12,8 +17,7 @@ pub fn estimate(t: &str) -> usize {
     let (mut cjk, mut other) = (0usize, 0usize);
     for c in t.chars() {
         let u = c as u32;
-        if (0x1100..=0x11ff).contains(&u) || (0x3040..=0x30ff).contains(&u) || (0x3130..=0x318f).contains(&u)
-            || (0x3400..=0x9fff).contains(&u) || (0xac00..=0xd7af).contains(&u) {
+        if (0x1100..=0x11ff).contains(&u) || (0x3040..=0x30ff).contains(&u) || (0x3130..=0x318f).contains(&u) || (0x3400..=0x9fff).contains(&u) || (0xac00..=0xd7af).contains(&u) {
             cjk += 1;
         } else {
             other += 1;
@@ -37,11 +41,14 @@ pub fn is_hidden(c: char) -> bool {
 
 pub fn sanitize(t: &str) -> (String, usize) {
     let mut removed = 0;
-    let out: String = t.chars().filter(|c| {
-        let hide = is_hidden(*c);
-        removed += hide as usize;
-        !hide
-    }).collect();
+    let out: String = t
+        .chars()
+        .filter(|c| {
+            let hide = is_hidden(*c);
+            removed += hide as usize;
+            !hide
+        })
+        .collect();
     (out, removed)
 }
 
@@ -256,7 +263,8 @@ pub fn compress(input: &str, code_max: usize, log_max: usize) -> Out {
     Out { text: out.join("\n"), stubs }
 }
 
-const EXT: &[&str] = &[".py", ".rs", ".ts", ".js", ".mjs", ".tsx", ".go", ".c", ".h", ".cpp", ".java", ".kt", ".md", ".toml", ".json", ".yaml", ".yml", ".sh", ".html", ".css", ".sql", ".wasm", ".lock", ".txt"];
+const EXT: &[&str] =
+    &[".py", ".rs", ".ts", ".js", ".mjs", ".tsx", ".go", ".c", ".h", ".cpp", ".java", ".kt", ".md", ".toml", ".json", ".yaml", ".yml", ".sh", ".html", ".css", ".sql", ".wasm", ".lock", ".txt"];
 const SKIP: &[&str] = &["if", "for", "while", "switch", "return", "print", "function", "catch", "and", "or", "not", "e.g", "i.e"];
 
 /// The facts a summary may not lose: paths, calls, versions, hashes, error names, stub ids, figures.
@@ -280,7 +288,7 @@ pub fn anchors(t: &str, max: usize) -> Vec<String> {
         }
     }
     for raw in t.split(|c: char| c.is_whitespace() || matches!(c, ',' | ';' | '`' | '"' | '\'' | '<' | '>' | '[' | ']' | '{' | '}')) {
-        let w = raw.trim_matches(|c: char| matches!(c, '.' | ':' | '!' | '?' | '*' | '=' ) );
+        let w = raw.trim_matches(|c: char| matches!(c, '.' | ':' | '!' | '?' | '*' | '='));
         if w.is_empty() {
             continue;
         }
@@ -289,13 +297,12 @@ pub fn anchors(t: &str, max: usize) -> Vec<String> {
         let alpha = b.iter().any(u8::is_ascii_alphabetic);
         let digit = b.iter().any(u8::is_ascii_digit);
         let is_path = (bare.contains('/') && alpha && bare.len() > 3) || EXT.iter().any(|e| bare.len() > e.len() && bare.ends_with(e));
-        let is_call = w.contains('(') && alpha && bare.len() >= 3 && !SKIP.contains(&bare)
-            && bare.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':');
-        let is_ident = alpha && bare.chars().all(|c| c.is_alphanumeric() || c == '_') && (bare.contains('_')
-            || bare.ends_with("Error") || bare.ends_with("Exception"));
+        let is_call = w.contains('(') && alpha && bare.len() >= 3 && !SKIP.contains(&bare) && bare.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':');
+        let is_ident = alpha && bare.chars().all(|c| c.is_alphanumeric() || c == '_') && (bare.contains('_') || bare.ends_with("Error") || bare.ends_with("Exception"));
         let is_ver = digit && bare.contains('.') && bare.trim_start_matches('v').bytes().all(|c| c.is_ascii_digit() || c == b'.');
         let is_hex = b.len() >= 7 && alpha && digit && b.iter().all(u8::is_ascii_hexdigit);
-        let is_fig = digit && b.len() >= 2 && (b.iter().all(|c| c.is_ascii_digit() || matches!(c, b'$' | b'%' | b'.')) || (digits(&b[..b.len() - 1]) && matches!(b[b.len() - 1], b'k' | b'K' | b'M' | b'%')));
+        let is_fig =
+            digit && b.len() >= 2 && (b.iter().all(|c| c.is_ascii_digit() || matches!(c, b'$' | b'%' | b'.')) || (digits(&b[..b.len() - 1]) && matches!(b[b.len() - 1], b'k' | b'K' | b'M' | b'%')));
         if is_path || is_call || is_ident || is_ver || is_hex || is_fig {
             add(bare, &mut out);
         }
@@ -330,15 +337,43 @@ fn put_secret(secret: &str, kind: Option<&str>, map: &mut Vec<V>) -> String {
 /// Removes credentials and national ids before a prompt leaves the machine. Reversible by map.
 pub fn redact(t: &str) -> (String, Vec<V>) {
     const PREFIX: &[&str] = &[
-        "sk-ant-", "sk-or-", "sk-", "sk_live_", "rk_live_", "pk_live_", "whsec_", "ghp_", "gho_",
-        "ghs_", "ghu_", "ghr_", "github_pat_", "glpat-", "glrt-", "AIza", "ya29.", "xoxb-",
-        "xoxp-", "xoxa-", "xoxr-", "xoxe-", "xapp-", "AKIA", "ASIA", "hf_", "gsk_", "npm_",
-        "pypi-", "dop_v1_", "shpat_", "sq0atp-", "SG.", "sbp_", "eyJ",
+        "sk-ant-",
+        "sk-or-",
+        "sk-",
+        "sk_live_",
+        "rk_live_",
+        "pk_live_",
+        "whsec_",
+        "ghp_",
+        "gho_",
+        "ghs_",
+        "ghu_",
+        "ghr_",
+        "github_pat_",
+        "glpat-",
+        "glrt-",
+        "AIza",
+        "ya29.",
+        "xoxb-",
+        "xoxp-",
+        "xoxa-",
+        "xoxr-",
+        "xoxe-",
+        "xapp-",
+        "AKIA",
+        "ASIA",
+        "hf_",
+        "gsk_",
+        "npm_",
+        "pypi-",
+        "dop_v1_",
+        "shpat_",
+        "sq0atp-",
+        "SG.",
+        "sbp_",
+        "eyJ",
     ];
-    const NAMES: &[&str] = &[
-        "API_KEY", "APIKEY", "API-KEY", "ACCESS_KEY", "SIGNING_KEY", "TOKEN", "SECRET",
-        "PASSWORD", "PASSWD", "PRIVATE_KEY", "PRIVATE-KEY", "CREDENTIAL",
-    ];
+    const NAMES: &[&str] = &["API_KEY", "APIKEY", "API-KEY", "ACCESS_KEY", "SIGNING_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PRIVATE_KEY", "PRIVATE-KEY", "CREDENTIAL"];
     let mut map: Vec<V> = Vec::new();
     let mut o = String::new();
     let mut in_key = String::new();
@@ -393,10 +428,7 @@ pub fn redact(t: &str) -> (String, Vec<V>) {
         let b = line.as_bytes();
         let mut cursor = 0;
         while cursor < b.len() {
-            let next = NAMES
-                .iter()
-                .filter_map(|n| up[cursor..].find(n).map(|k| (cursor + k, cursor + k + n.len())))
-                .min_by_key(|x| x.0);
+            let next = NAMES.iter().filter_map(|n| up[cursor..].find(n).map(|k| (cursor + k, cursor + k + n.len()))).min_by_key(|x| x.0);
             let Some((_, mut i)) = next else {
                 named_out.push_str(&line[cursor..]);
                 break;
@@ -463,7 +495,11 @@ pub fn unredact(text: &str, map: &[V]) -> (String, usize) {
         .iter()
         .filter_map(|m| {
             let mark = m.get("mark").s();
-            if mark.is_empty() { None } else { Some((mark, m.get("value").s())) }
+            if mark.is_empty() {
+                None
+            } else {
+                Some((mark, m.get("value").s()))
+            }
         })
         .collect();
     if pairs.is_empty() || text.is_empty() {

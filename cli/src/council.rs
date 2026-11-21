@@ -16,31 +16,31 @@ pub struct Preflight {
 /// Worst-case cost and how much of today's allowance remains. Makes no calls.
 pub fn preflight(eng: &Engine, question: &str, seats: usize) -> Preflight {
     let seat = obj(vec![("model", st("x")), ("title", st("")), ("fallbacks", V::Arr(vec![]))]);
-    let probe = k("council_step", vec![("start", obj(vec![
-        ("question", st(question)),
-        ("seats", V::Arr(vec![seat; seats.max(2)])),
-        ("chair", obj(vec![("model", st("x")), ("fallbacks", V::Arr(vec![]))])),
-        ("options", V::Arr(vec![])),
-        ("limits", V::Obj(vec![])),
-    ]))]);
+    let probe = k(
+        "council_step",
+        vec![(
+            "start",
+            obj(vec![
+                ("question", st(question)),
+                ("seats", V::Arr(vec![seat; seats.max(2)])),
+                ("chair", obj(vec![("model", st("x")), ("fallbacks", V::Arr(vec![]))])),
+                ("options", V::Arr(vec![])),
+                ("limits", V::Obj(vec![])),
+            ]),
+        )],
+    );
     let daily = eng.cfg.get("council").get("daily_tokens").n(0.0) as u64;
-    Preflight {
-        worst_case: probe.get("state").get("worst_case").n(0.0) as u64,
-        daily,
-        left_today: if daily > 0 { daily.saturating_sub(ledger::total_today(&eng.cfg)) } else { 0 },
-    }
+    Preflight { worst_case: probe.get("state").get("worst_case").n(0.0) as u64, daily, left_today: if daily > 0 { daily.saturating_sub(ledger::total_today(&eng.cfg)) } else { 0 } }
 }
 
 /// The kernel's zero-call breakdown for this profile's seats: tokens per stage, whether the seats
 /// are independent models, and what sanitizing and redaction would remove from the question.
 pub fn estimate_breakdown(eng: &Engine, question: &str) -> V {
     let (seats, _, _) = config::council_seats(&eng.cfg);
-    k("preflight", vec![
-        ("question", st(question)),
-        ("seats", str_arr(&seats)),
-        ("mode", eng.cfg.get("mode").clone()),
-        ("limits", obj(vec![("weights", eng.cfg.get("council").get("weights").clone())])),
-    ])
+    k(
+        "preflight",
+        vec![("question", st(question)), ("seats", str_arr(&seats)), ("mode", eng.cfg.get("mode").clone()), ("limits", obj(vec![("weights", eng.cfg.get("council").get("weights").clone())]))],
+    )
 }
 
 fn execute(eng: &Engine, call: &V) -> V {
@@ -59,14 +59,7 @@ fn execute(eng: &Engine, call: &V) -> V {
                 let input = if r.estimated && r.input_tokens == 0 { estimate(prompt) as u64 } else { r.input_tokens };
                 let output = if r.estimated && r.output_tokens == 0 { estimate(&r.text) as u64 } else { r.output_tokens };
                 ledger::record(&spec, input, output, &format!("council/{}", call.get("kind").s()), r.estimated, &eng.p.root.display().to_string(), r.cost_usd);
-                return obj(vec![
-                    ("id", st(id)),
-                    ("text", st(&r.text)),
-                    ("model", st(&spec)),
-                    ("in", V::Num(input as f64)),
-                    ("out", V::Num(output as f64)),
-                    ("redacted", V::Num(r.redacted as f64)),
-                ]);
+                return obj(vec![("id", st(id)), ("text", st(&r.text)), ("model", st(&spec)), ("in", V::Num(input as f64)), ("out", V::Num(output as f64)), ("redacted", V::Num(r.redacted as f64))]);
             }
             Err(e) => {
                 log(&format!("{spec} failed: {}", e.msg));
@@ -89,25 +82,29 @@ pub fn run(eng: &Engine, question: &str, options: &[String], on_event: &mut dyn 
         }
         limit = limit.min(pre.left_today);
     }
-    let seat_list: Vec<V> = seats.iter().enumerate().map(|(i, m)| obj(vec![
-        ("model", st(m)),
-        ("title", st(m)),
-        ("lens", V::Num(i as f64)),
-        ("fallbacks", str_arr(&fallbacks)),
-    ])).collect();
-    let mut step = k("council_step", vec![("start", obj(vec![
-        ("question", st(question)),
-        ("options", str_arr(options)),
-        ("seats", V::Arr(seat_list)),
-        ("chair", obj(vec![("model", st(&chair)), ("fallbacks", str_arr(&fallbacks))])),
-        ("limits", obj(vec![
-            ("mode", eng.cfg.get("mode").clone()),
-            ("max_tokens", V::Num(limit as f64)),
-            ("agree_confidence", c.get("agree_confidence").clone()),
-            ("clear_share", c.get("clear_share").clone()),
-            ("weights", c.get("weights").clone()),
-        ])),
-    ]))]);
+    let seat_list: Vec<V> = seats.iter().enumerate().map(|(i, m)| obj(vec![("model", st(m)), ("title", st(m)), ("lens", V::Num(i as f64)), ("fallbacks", str_arr(&fallbacks))])).collect();
+    let mut step = k(
+        "council_step",
+        vec![(
+            "start",
+            obj(vec![
+                ("question", st(question)),
+                ("options", str_arr(options)),
+                ("seats", V::Arr(seat_list)),
+                ("chair", obj(vec![("model", st(&chair)), ("fallbacks", str_arr(&fallbacks))])),
+                (
+                    "limits",
+                    obj(vec![
+                        ("mode", eng.cfg.get("mode").clone()),
+                        ("max_tokens", V::Num(limit as f64)),
+                        ("agree_confidence", c.get("agree_confidence").clone()),
+                        ("clear_share", c.get("clear_share").clone()),
+                        ("weights", c.get("weights").clone()),
+                    ]),
+                ),
+            ]),
+        )],
+    );
     if !step.get("error").s().is_empty() {
         return Err(format!("{}. This profile has too few seats.", step.get("error").s()));
     }

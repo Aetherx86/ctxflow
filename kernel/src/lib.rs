@@ -8,7 +8,11 @@ pub mod council;
 pub mod gate;
 pub mod json;
 
-use alloc::{string::{String, ToString}, vec, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 use json::{obj, parse, st, V};
 
 include!(concat!(env!("OUT_DIR"), "/pool.rs"));
@@ -65,13 +69,7 @@ pub fn dispatch(input: &str) -> String {
             let (s, m) = compress::verify_summary(text, pins);
             let retained = total.saturating_sub(m.len());
             let ratio = if total == 0 { 1.0 } else { retained as f64 / total as f64 };
-            obj(vec![
-                ("text", st(&s)),
-                ("missing", V::Arr(m.iter().map(|a| st(a)).collect())),
-                ("retained", V::Num(retained as f64)),
-                ("total", V::Num(total as f64)),
-                ("ratio", V::Num(ratio)),
-            ])
+            obj(vec![("text", st(&s)), ("missing", V::Arr(m.iter().map(|a| st(a)).collect())), ("retained", V::Num(retained as f64)), ("total", V::Num(total as f64)), ("ratio", V::Num(ratio))])
         }
         "error_sig" => obj(vec![("sig", st(&compress::error_sig(text)))]),
         "sanitize" => {

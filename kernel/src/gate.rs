@@ -1,7 +1,12 @@
 //! Decides whether the expensive model is allowed to read anything. Routine turns stay silent.
 use crate::compress::{compress, estimate};
 use crate::json::{obj, st, V};
-use alloc::{format, string::{String, ToString}, vec, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 pub fn gate(i: &V) -> V {
     let trigger = i.get("trigger").s();

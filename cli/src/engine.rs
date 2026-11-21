@@ -194,11 +194,7 @@ impl Engine {
     }
 
     fn prune(&self, text: &str) -> R<String> {
-        let r = k("compress", vec![
-            ("text", st(text)),
-            ("code_max", V::Num(self.ctx("history_codeblock_max_lines", 12) as f64)),
-            ("log_max", V::Num(self.ctx("history_log_max_lines", 6) as f64)),
-        ]);
+        let r = k("compress", vec![("text", st(text)), ("code_max", V::Num(self.ctx("history_codeblock_max_lines", 12) as f64)), ("log_max", V::Num(self.ctx("history_log_max_lines", 6) as f64))]);
         self.p.archive_put(r.get("stubs").arr())?;
         Ok(r.get("text").s().to_string())
     }
@@ -241,7 +237,10 @@ impl Engine {
     fn summarize(&self, prev: &str, turns: &[Turn]) -> R<String> {
         let n = self.ctx("summary_max_lines", 10);
         let convo = convo_text(turns);
-        let prompt = format!("ROLLING SUMMARY TASK\nMerge the previous summary and the new turns into at most {n} bullet lines.\n\n=== PREVIOUS SUMMARY ===\n{}\n\n=== NEW TURNS ===\n{convo}", if prev.is_empty() { "(none)" } else { prev });
+        let prompt = format!(
+            "ROLLING SUMMARY TASK\nMerge the previous summary and the new turns into at most {n} bullet lines.\n\n=== PREVIOUS SUMMARY ===\n{}\n\n=== NEW TURNS ===\n{convo}",
+            if prev.is_empty() { "(none)" } else { prev }
+        );
         let text = self.route("summary", SUMMARY_SYSTEM, &prompt, "summary", None, None)?.text;
         Ok(self.keep_refs(text.trim(), &format!("{prev}\n{convo}")))
     }
@@ -300,7 +299,11 @@ impl Engine {
         let source = format!("{}\n{convo}\n{}", s.summary, s.pending_progress.join("\n"));
         let summary = self.keep_refs(summary.trim(), &source);
         self.update_progress(&mut s, note)?;
-        let hand = format!("# HANDOFF ({} UTC, session {})\n\n{summary}\n\n---\nTo continue in a new session or another app, attach only this file, SPEC.md, PROGRESS.md and the one file you are changing.\n", stamp(" "), s.id);
+        let hand = format!(
+            "# HANDOFF ({} UTC, session {})\n\n{summary}\n\n---\nTo continue in a new session or another app, attach only this file, SPEC.md, PROGRESS.md and the one file you are changing.\n",
+            stamp(" "),
+            s.id
+        );
         let file = self.cfg.get("context").get("handoff_file").s();
         self.p.write_doc(if file.is_empty() { "HANDOFF.md" } else { file }, &hand)?;
         let archived = self.p.archive_session(&s)?;

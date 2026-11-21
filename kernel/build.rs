@@ -16,8 +16,7 @@ fn main() {
     let salt = 0x51f2_a9c3u32 ^ env::var("CARGO_PKG_VERSION").unwrap().bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
     let mut out = format!("pub const SALT: u32 = {salt};\npub const POOL: &[&[u8]] = &[\n");
     for part in text.split("\n%%\n") {
-        let enc: Vec<String> = part.trim().bytes().enumerate()
-            .map(|(i, b)| (b ^ mix(salt.wrapping_add(i as u32)) as u8).to_string()).collect();
+        let enc: Vec<String> = part.trim().bytes().enumerate().map(|(i, b)| (b ^ mix(salt.wrapping_add(i as u32)) as u8).to_string()).collect();
         out += &format!("&[{}],\n", enc.join(","));
     }
     out += "];\n";

@@ -24,16 +24,28 @@ impl V {
         &NULL
     }
     pub fn s(&self) -> &str {
-        if let V::Str(x) = self { x } else { "" }
+        if let V::Str(x) = self {
+            x
+        } else {
+            ""
+        }
     }
     pub fn n(&self, d: f64) -> f64 {
-        if let V::Num(x) = self { *x } else { d }
+        if let V::Num(x) = self {
+            *x
+        } else {
+            d
+        }
     }
     pub fn b(&self) -> bool {
         matches!(self, V::Bool(true))
     }
     pub fn arr(&self) -> &[V] {
-        if let V::Arr(x) = self { x } else { &[] }
+        if let V::Arr(x) = self {
+            x
+        } else {
+            &[]
+        }
     }
     pub fn set(&mut self, k: &str, v: V) {
         if let V::Obj(o) = self {
@@ -113,7 +125,11 @@ pub fn parse(t: &str) -> Option<V> {
     let mut p = P { b: t.as_bytes(), i: 0 };
     let v = p.val(0)?;
     p.ws();
-    if p.i == p.b.len() { Some(v) } else { None }
+    if p.i == p.b.len() {
+        Some(v)
+    } else {
+        None
+    }
 }
 
 /// Models wrap JSON in fences and prose. Take the outermost object that parses.

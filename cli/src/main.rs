@@ -192,10 +192,7 @@ impl Global {
         let cfg = config::load(&p.root, self.profile.as_deref())?;
         let ignored = strs(cfg.get("ignored"));
         if !ignored.is_empty() {
-            dim(&format!(
-                "── this project's config sets {} — ignored until you read .ctxflow/config.toml and run `ctxflow trust`",
-                ignored.join(", ")
-            ));
+            dim(&format!("── this project's config sets {} — ignored until you read .ctxflow/config.toml and run `ctxflow trust`", ignored.join(", ")));
         }
         Ok(Engine { p, cfg })
     }
@@ -245,15 +242,8 @@ fn cmd_init(g: &Global, args: &[String]) -> R<()> {
     Ok(())
 }
 
-const ASK_FLAGS: &[(&str, &str, bool)] = &[
-    ("-f", "--file", true),
-    ("", "--force", false),
-    ("-t", "--task", true),
-    ("-m", "--model", true),
-    ("", "--no-remember", false),
-    ("-r", "--ref", true),
-    ("-q", "--quiet", false),
-];
+const ASK_FLAGS: &[(&str, &str, bool)] =
+    &[("-f", "--file", true), ("", "--force", false), ("-t", "--task", true), ("-m", "--model", true), ("", "--no-remember", false), ("-r", "--ref", true), ("-q", "--quiet", false)];
 
 fn cmd_ask(g: &Global, args: &[String]) -> R<()> {
     let a = parse_args(args, ASK_FLAGS)?;
@@ -264,14 +254,8 @@ fn cmd_ask(g: &Global, args: &[String]) -> R<()> {
         }
     }
     let eng = g.engine(true)?;
-    let ans = eng.ask(&read_message(&a.pos)?, &AskOptions {
-        files: a.many("--file"),
-        task,
-        model: a.one("--model"),
-        force: a.has("--force"),
-        remember: !a.has("--no-remember"),
-        refs: a.many("--ref"),
-    })?;
+    let ans =
+        eng.ask(&read_message(&a.pos)?, &AskOptions { files: a.many("--file"), task, model: a.one("--model"), force: a.has("--force"), remember: !a.has("--no-remember"), refs: a.many("--ref") })?;
     print_answer(&ans, a.has("--quiet"));
     Ok(())
 }
@@ -294,7 +278,12 @@ fn print_status(eng: &Engine) {
     say(&format!("project : {}{}", eng.p.root.display(), if init { "" } else { "  (not initialized)" }));
     say(&format!(
         "session : {} · {} turn(s) kept · summary {} tok · history ~{} tok · spent {} tok · {} pending delta(s)",
-        s.id, s.turns.len(), estimate(&s.summary), eng.history_tokens(&s), s.spent_tokens, s.pending_progress.len()
+        s.id,
+        s.turns.len(),
+        estimate(&s.summary),
+        eng.history_tokens(&s),
+        s.spent_tokens,
+        s.pending_progress.len()
     ));
     for name in strs(eng.cfg.get("context").get("state_files")) {
         say(&format!("  {name:<12} ~{} tok", estimate(&eng.p.read_doc(&name))));
@@ -303,17 +292,31 @@ fn print_status(eng: &Engine) {
     if s.spent_tokens >= hint {
         say(&format!("  spent >= {hint}: run `ctxflow handoff` to start a fresh, cheap session"));
     }
-    say(&format!("mode    : {} · profile: {}", eng.cfg.get("mode").s(), match eng.cfg.get("active_profile").s() { "" => "none", p => p }));
+    say(&format!(
+        "mode    : {} · profile: {}",
+        eng.cfg.get("mode").s(),
+        match eng.cfg.get("active_profile").s() {
+            "" => "none",
+            p => p,
+        }
+    ));
     say("\nusage today (since 00:00 Pacific) / last 60s, vs. configured limits:");
     let stats = ledger::usage_window();
     let specs: BTreeSet<String> = stats.keys().cloned().chain(engine::routed_models(&eng.cfg)).collect();
     for spec in specs {
         let u = stats.get(&spec).copied().unwrap_or_default();
         let lim = config::model_budget(&eng.cfg, &spec);
-        let cells: Vec<String> = ["rpd", "tpd", "rpm", "tpm"].iter().map(|key| {
-            let limit = lim.get(key).n(0.0) as u64;
-            if limit > 0 { format!("{key}={}/{limit}", u.field(key)) } else { format!("{key}={}", u.field(key)) }
-        }).collect();
+        let cells: Vec<String> = ["rpd", "tpd", "rpm", "tpm"]
+            .iter()
+            .map(|key| {
+                let limit = lim.get(key).n(0.0) as u64;
+                if limit > 0 {
+                    format!("{key}={}/{limit}", u.field(key))
+                } else {
+                    format!("{key}={}", u.field(key))
+                }
+            })
+            .collect();
         say(&format!("  {spec:<34} {}", cells.join("  ")));
     }
 }
@@ -386,13 +389,26 @@ fn run_council(eng: &Engine, question: &str, f: &CouncilFlags) -> R<()> {
                     V::Num(n) => format!("{n:.digits$}"),
                     _ => "-".to_string(),
                 };
-                say(&format!("| {} | {} | {} | {} | {} | {} | {} | {} |", r.get("model").s(), cell("evidence", 1), cell("risk", 1), cell("feasibility", 1), cell("weighted", 2), cell("borda", 2), cell("pairwise_wins", 0), r.get("fatal").arr().len()));
+                say(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {} | {} |",
+                    r.get("model").s(),
+                    cell("evidence", 1),
+                    cell("risk", 1),
+                    cell("feasibility", 1),
+                    cell("weighted", 2),
+                    cell("borda", 2),
+                    cell("pairwise_wins", 0),
+                    r.get("fatal").arr().len()
+                ));
             }
         }
         let removed = result.get("redacted").n(0.0);
         dim(&format!(
             "\n── {mode} · {} distinct model(s) · {} calls · in {} / out {} tokens{}",
-            result.get("independent_models").n(0.0), result.get("calls").n(0.0), used_in, used_out,
+            result.get("independent_models").n(0.0),
+            result.get("calls").n(0.0),
+            used_in,
+            used_out,
             if removed > 0.0 { format!(" · {removed} secret(s) removed") } else { String::new() }
         ));
         let mut pairwise = Vec::new();
@@ -473,7 +489,14 @@ fn cmd_stats(g: &Global, args: &[String]) -> R<()> {
     };
     say(&format!(
         "{scope}: {} call(s), {} cloud and {} local · in {} / out {} tokens · ${:.4} (${:.4} reported by providers, ${:.4} estimated from [pricing])",
-        rep.entries, rep.cloud_calls, rep.local_calls, rep.total_in, rep.total_out, rep.total_cost_usd(), rep.recorded_cost_usd, rep.estimated_cost_usd
+        rep.entries,
+        rep.cloud_calls,
+        rep.local_calls,
+        rep.total_in,
+        rep.total_out,
+        rep.total_cost_usd(),
+        rep.recorded_cost_usd,
+        rep.estimated_cost_usd
     ));
     if rep.entries == 0 {
         return Ok(());
@@ -808,11 +831,17 @@ fn cmd_line(g: &Global) -> R<()> {
     let daily = cfg.get("council").get("daily_tokens").n(0.0) as u64;
     let today = ledger::total_today(&cfg);
     let pct = today.saturating_mul(100).checked_div(daily).map_or_else(|| today.to_string(), |p| format!("{p}%"));
-    let profile = match cfg.get("active_profile").s() { "" => "default", p => p };
+    let profile = match cfg.get("active_profile").s() {
+        "" => "default",
+        p => p,
+    };
     let trust = if cfg.get("trusted").b() { "" } else { " · not trusted" };
     say(&format!(
         "{profile} · {} · {:.1}k · advisor {}/{} · today {pct}{trust}",
-        cfg.get("mode").s(), s.spent_tokens as f64 / 1000.0, s.advisor.get("calls").n(0.0), cfg.get("advisor").get("max_calls").n(0.0)
+        cfg.get("mode").s(),
+        s.spent_tokens as f64 / 1000.0,
+        s.advisor.get("calls").n(0.0),
+        cfg.get("advisor").get("max_calls").n(0.0)
     ));
     Ok(())
 }

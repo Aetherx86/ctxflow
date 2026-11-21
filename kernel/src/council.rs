@@ -4,7 +4,12 @@
 use crate::compress::{compress, estimate, hash_id, redact, sanitize};
 use crate::json::{obj, parse_loose, st, V};
 use crate::prompt;
-use alloc::{format, string::{String, ToString}, vec, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 const CARD_TOKENS: f64 = 420.0;
 const REVIEW_TOKENS: f64 = 220.0;
@@ -14,7 +19,11 @@ const EPS: f64 = 1e-9;
 const MAX_WEIGHT: f64 = 100.0;
 
 fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() <= n { s.to_string() } else { s.chars().take(n).collect::<String>() + "..." }
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n).collect::<String>() + "..."
+    }
 }
 
 /// Model text shown to another model or a person: no hidden characters, and on one line, so an
@@ -38,9 +47,7 @@ fn stance_norm(s: &str) -> String {
 }
 
 fn parse_card(text: &str) -> V {
-    let list = |v: &V, n: usize| -> V {
-        V::Arr(v.arr().iter().take(n).map(|x| st(&clean_line(x.s(), 240))).filter(|x| !x.s().is_empty()).collect())
-    };
+    let list = |v: &V, n: usize| -> V { V::Arr(v.arr().iter().take(n).map(|x| st(&clean_line(x.s(), 240))).filter(|x| !x.s().is_empty()).collect()) };
     if let Some(j) = parse_loose(text) {
         if !j.get("answer").s().is_empty() {
             return obj(vec![
@@ -55,7 +62,15 @@ fn parse_card(text: &str) -> V {
         }
     }
     // Local models often ignore the format. Keep the content; it just cannot count as agreement.
-    obj(vec![("stance", st("")), ("answer", st(&clean_line(text, 600))), ("confidence", V::Num(50.0)), ("reasons", V::Arr(vec![])), ("risks", V::Arr(vec![])), ("would_change", st("")), ("valid", V::Bool(false))])
+    obj(vec![
+        ("stance", st("")),
+        ("answer", st(&clean_line(text, 600))),
+        ("confidence", V::Num(50.0)),
+        ("reasons", V::Arr(vec![])),
+        ("risks", V::Arr(vec![])),
+        ("would_change", st("")),
+        ("valid", V::Bool(false)),
+    ])
 }
 
 fn card_text(c: &V, label: &str) -> String {
@@ -109,7 +124,16 @@ fn ev(items: Vec<(&str, V)>) -> V {
 
 #[allow(clippy::too_many_arguments)]
 fn call(id: &str, model: &str, fallbacks: &V, system: String, prompt: String, max: f64, seat: f64, kind: &str) -> V {
-    obj(vec![("id", st(id)), ("model", st(model)), ("fallbacks", fallbacks.clone()), ("system", st(&system)), ("prompt", st(&prompt)), ("max_tokens", V::Num(max)), ("seat", V::Num(seat)), ("kind", st(kind))])
+    obj(vec![
+        ("id", st(id)),
+        ("model", st(model)),
+        ("fallbacks", fallbacks.clone()),
+        ("system", st(&system)),
+        ("prompt", st(&prompt)),
+        ("max_tokens", V::Num(max)),
+        ("seat", V::Num(seat)),
+        ("kind", st(kind)),
+    ])
 }
 
 fn distinct_models(cards: &[V]) -> usize {
@@ -129,10 +153,18 @@ fn weights_from(limits: &V) -> (f64, f64, f64) {
     let pick = |k: &str| {
         let v = w.get(k).n(1.0);
         // Capped, so a huge weight cannot overflow the weighted score to infinity.
-        if v.is_finite() && v >= 0.0 { v.min(MAX_WEIGHT) } else { 1.0 }
+        if v.is_finite() && v >= 0.0 {
+            v.min(MAX_WEIGHT)
+        } else {
+            1.0
+        }
     };
     let (e, r, f) = (pick("evidence"), pick("risk"), pick("feasibility"));
-    if e + r + f > 0.0 { (e, r, f) } else { (1.0, 1.0, 1.0) }
+    if e + r + f > 0.0 {
+        (e, r, f)
+    } else {
+        (1.0, 1.0, 1.0)
+    }
 }
 
 fn weights_val(w: (f64, f64, f64)) -> V {
@@ -269,13 +301,28 @@ pub fn step(i: &V) -> V {
         state.set("stage", V::Num(1.0));
         let opts: Vec<&str> = s.get("options").arr().iter().map(|x| x.s()).collect();
         let opt_line = if opts.is_empty() { String::new() } else { format!("\nstance must be exactly one of: {}", opts.join(" | ")) };
-        events.push(ev(vec![("type", st("convened")), ("query", st(question)), ("models", V::Arr(seats.iter().map(|x| x.get("model").clone()).collect())), ("worst_case", V::Num(wc as f64)), ("budget", V::Num(budget))]));
+        events.push(ev(vec![
+            ("type", st("convened")),
+            ("query", st(question)),
+            ("models", V::Arr(seats.iter().map(|x| x.get("model").clone()).collect())),
+            ("worst_case", V::Num(wc as f64)),
+            ("budget", V::Num(budget)),
+        ]));
         events.push(ev(vec![("type", st("stage")), ("stage", V::Num(1.0)), ("title", st("Independent answers"))]));
         for (k, seat) in seats.iter().enumerate() {
             let lens = seat.get("lens").n(k as f64) as usize % 4;
             let n = (k + 1) as f64;
             events.push(ev(vec![("type", st("seat_start")), ("seat", V::Num(n)), ("title", seat.get("title").clone()), ("model", seat.get("model").clone())]));
-            calls.push(call(&format!("s{k}"), seat.get("model").s(), seat.get("fallbacks"), format!("{}{opt_line}{}\n{}", prompt(0), lang_line(question), prompt(4 + lens)), question.to_string(), CARD_TOKENS, n, "card"));
+            calls.push(call(
+                &format!("s{k}"),
+                seat.get("model").s(),
+                seat.get("fallbacks"),
+                format!("{}{opt_line}{}\n{}", prompt(0), lang_line(question), prompt(4 + lens)),
+                question.to_string(),
+                CARD_TOKENS,
+                n,
+                "card",
+            ));
         }
         return obj(vec![("state", state), ("calls", V::Arr(calls)), ("events", V::Arr(events)), ("done", V::Bool(false))]);
     }
@@ -348,7 +395,17 @@ pub fn step(i: &V) -> V {
         // Copies of one model agreeing is not independent evidence, so it does not stop the run.
         if mode != "thorough" && agreed && distinct_models(&cards) >= 2 && cards.len() == seats.len() {
             events.push(ev(vec![("type", st("stage")), ("stage", V::Num(2.0)), ("title", st("Scoring skipped")), ("model", st("none"))]));
-            events.push(ev(vec![("type", st("chunk")), ("seat", V::Num(5.0)), ("text", st(&format!("Skipped. All {} models independently chose \"{first}\" with confidence at or above {min_conf}, so scoring would cost tokens without changing the result.", cards.len())))]));
+            events.push(ev(vec![
+                ("type", st("chunk")),
+                ("seat", V::Num(5.0)),
+                (
+                    "text",
+                    st(&format!(
+                        "Skipped. All {} models independently chose \"{first}\" with confidence at or above {min_conf}, so scoring would cost tokens without changing the result.",
+                        cards.len()
+                    )),
+                ),
+            ]));
             events.push(ev(vec![("type", st("stage")), ("stage", V::Num(3.0)), ("title", st("Decision")), ("model", st("none"))]));
             let res = finish(&mut state, &mut events, "agreed", &card_md(&cards[best], korean), "");
             return obj(vec![("state", state), ("calls", V::Arr(calls)), ("events", V::Arr(events)), ("done", V::Bool(true)), ("result", res)]);
@@ -375,7 +432,16 @@ pub fn step(i: &V) -> V {
                 map.push(obj(vec![("label", st(&label)), ("card", V::Num(*ci as f64))]));
             }
             maps.push(V::Arr(map));
-            calls.push(call(&format!("r{r}"), c.get("model").s(), &V::Arr(vec![]), format!("{}\nThe scores object must have one entry for each of: {}.", prompt(1), labels.join(", ")), format!("QUESTION:\n{qs}\n\nANSWERS:\n{body}"), REVIEW_TOKENS, c.get("seat").n(1.0), "review"));
+            calls.push(call(
+                &format!("r{r}"),
+                c.get("model").s(),
+                &V::Arr(vec![]),
+                format!("{}\nThe scores object must have one entry for each of: {}.", prompt(1), labels.join(", ")),
+                format!("QUESTION:\n{qs}\n\nANSWERS:\n{body}"),
+                REVIEW_TOKENS,
+                c.get("seat").n(1.0),
+                "review",
+            ));
         }
         state.set("maps", V::Arr(maps));
         state.set("calls", V::Num(state.get("calls").n(0.0) + cards.len() as f64));
@@ -404,7 +470,11 @@ pub fn step(i: &V) -> V {
         let mut fatal: Vec<Vec<String>> = vec![Vec::new(); n];
         let safe_score = |v: &V| {
             let x = v.n(3.0);
-            if x.is_finite() { x.clamp(1.0, 5.0) } else { 3.0 }
+            if x.is_finite() {
+                x.clamp(1.0, 5.0)
+            } else {
+                3.0
+            }
         };
         for r in 0..n {
             let Some(res) = find(&format!("r{r}")) else { continue };
@@ -511,15 +581,7 @@ pub fn step(i: &V) -> V {
         }
         let agreement = if agree_den > 0 { Some(agree_num as f64 / agree_den as f64) } else { None };
 
-        let mut rows: Vec<(usize, f64, f64)> = (0..n)
-            .map(|k| {
-                if votes[k] > 0.0 {
-                    (k, borda[k] / votes[k], weighted_sum[k] / votes[k])
-                } else {
-                    (k, -1.0, -1.0)
-                }
-            })
-            .collect();
+        let mut rows: Vec<(usize, f64, f64)> = (0..n).map(|k| if votes[k] > 0.0 { (k, borda[k] / votes[k], weighted_sum[k] / votes[k]) } else { (k, -1.0, -1.0) }).collect();
         rows.sort_by(|a, b| {
             let bd = b.1 - a.1;
             if bd.abs() > EPS {
@@ -529,9 +591,7 @@ pub fn step(i: &V) -> V {
             if wd.abs() > EPS {
                 return wd.partial_cmp(&0.0).unwrap_or(core::cmp::Ordering::Equal);
             }
-            fatal[a.0].len().cmp(&fatal[b.0].len()).then_with(|| {
-                cards[b.0].get("confidence").n(0.0).partial_cmp(&cards[a.0].get("confidence").n(0.0)).unwrap_or(core::cmp::Ordering::Equal)
-            })
+            fatal[a.0].len().cmp(&fatal[b.0].len()).then_with(|| cards[b.0].get("confidence").n(0.0).partial_cmp(&cards[a.0].get("confidence").n(0.0)).unwrap_or(core::cmp::Ordering::Equal))
         });
         let mut matrix: Vec<V> = Vec::new();
         let mut md = String::from("| Rank | Seat | Answer | Evidence | Risks | Feasible | Borda | Flaws |\n|---|---|---|---|---|---|---|---|\n");
@@ -543,7 +603,17 @@ pub fn step(i: &V) -> V {
             let scored = votes[*k] > 0.0;
             // An answer nobody scored has no score. Showing 0 would read as "worst".
             let cell = |x: f64, d: usize| if scored { format!("{:.*}", d, x) } else { String::from("-") };
-            md += &format!("| {} | {} | {} | {} | {} | {} | {} | {} |\n", rank + 1, title, clip(c.get("answer").s(), 90).replace('|', "/").replace('\n', " "), cell(ev_s[*k] / v, 1), cell(risk[*k] / v, 1), cell(feas[*k] / v, 1), cell(*b, 2), fatal[*k].len());
+            md += &format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                rank + 1,
+                title,
+                clip(c.get("answer").s(), 90).replace('|', "/").replace('\n', " "),
+                cell(ev_s[*k] / v, 1),
+                cell(risk[*k] / v, 1),
+                cell(feas[*k] / v, 1),
+                cell(*b, 2),
+                fatal[*k].len()
+            );
             let num = |x: f64| if scored { V::Num(x) } else { V::Null };
             let spread = if scored { V::Num((max_w[*k] - min_w[*k]).max(0.0)) } else { V::Null };
             let first_share = if saw[*k] > 0.0 { V::Num(firsts[*k] / saw[*k]) } else { V::Null };
@@ -570,10 +640,13 @@ pub fn step(i: &V) -> V {
         state.set("share", V::Num(share));
         state.set("complete_reviewers", V::Num(complete as f64));
         state.set("agreement", agreement.map_or(V::Null, V::Num));
-        state.set("condorcet_winner", match condorcet {
-            Some(ci) => obj(vec![("seat", cards[ci].get("seat").clone()), ("model", cards[ci].get("model").clone())]),
-            None => V::Null,
-        });
+        state.set(
+            "condorcet_winner",
+            match condorcet {
+                Some(ci) => obj(vec![("seat", cards[ci].get("seat").clone()), ("model", cards[ci].get("model").clone())]),
+                None => V::Null,
+            },
+        );
         events.push(ev(vec![("type", st("chunk")), ("seat", V::Num(5.0)), ("text", st(&md))]));
         events.push(ev(vec![("type", st("stage_end")), ("stage", V::Num(2.0)), ("content", st(&md))]));
         let chair = state.get("chair").get("model").s().to_string();
@@ -594,7 +667,13 @@ pub fn step(i: &V) -> V {
         }
         let est = (estimate(&material) + estimate(&prompt(2))) as f64 + CHAIR_TOKENS;
         if !fits(est) || chair.is_empty() {
-            let res = finish(&mut state, &mut events, "budget", &card_md(&cards[top], korean), "Token limit reached before the final step. This is the top-scored answer and the disagreement was not resolved.");
+            let res = finish(
+                &mut state,
+                &mut events,
+                "budget",
+                &card_md(&cards[top], korean),
+                "Token limit reached before the final step. This is the top-scored answer and the disagreement was not resolved.",
+            );
             return obj(vec![("state", state), ("calls", V::Arr(calls)), ("events", V::Arr(events)), ("done", V::Bool(true)), ("result", res)]);
         }
         state.set("top", V::Num(top as f64));

@@ -28,10 +28,10 @@ fn working_diff(eng: &Engine) -> String {
         return String::new();
     }
     let Some(git) = find_in_path("git") else { return String::new() };
-    let args: Vec<String> = [
-        "-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "diff.external=", "--no-pager",
-        "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--stat", "-p",
-    ].iter().map(|s| s.to_string()).collect();
+    let args: Vec<String> = ["-c", "core.fsmonitor=false", "-c", "core.pager=cat", "-c", "diff.external=", "--no-pager", "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--stat", "-p"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     match run_process(&git, &args, "", Some(&eng.p.root), Duration::from_secs(20)) {
         Ok(o) if o.ok => o.stdout,
         _ => String::new(),
@@ -57,17 +57,16 @@ pub fn advise(eng: &Engine, trigger: &str, question: &str, error: &str) -> R<Adv
     } else {
         String::new()
     };
-    let g = k("gate", vec![
-        ("trigger", st(trigger)),
-        ("state", s.advisor.clone()),
-        ("error_sig", st(&sig)),
-        ("has_changes", V::Bool(changed)),
-        ("limits", obj(vec![
-            ("max_calls", a.get("max_calls").clone()),
-            ("max_tokens", a.get("max_tokens").clone()),
-            ("error_repeat", a.get("error_repeat").clone()),
-        ])),
-    ]);
+    let g = k(
+        "gate",
+        vec![
+            ("trigger", st(trigger)),
+            ("state", s.advisor.clone()),
+            ("error_sig", st(&sig)),
+            ("has_changes", V::Bool(changed)),
+            ("limits", obj(vec![("max_calls", a.get("max_calls").clone()), ("max_tokens", a.get("max_tokens").clone()), ("error_repeat", a.get("error_repeat").clone())])),
+        ],
+    );
     s.advisor = g.get("state").clone();
     let reason = g.get("reason").s().to_string();
     if !g.get("consult").b() {
