@@ -47,10 +47,10 @@ jobs:
           node-version: "24"
       - run: cargo test -p ctxflow --locked
       - name: JS host, from source
-        run: node --no-warnings --test test/
+        run: node --no-warnings --test "test/*.test.mjs"
         working-directory: hosts/js
       - name: JS host, the obfuscated bundle the app ships
-        run: node --no-warnings --test test/
+        run: node --no-warnings --test "test/*.test.mjs"
         working-directory: hosts/js
         env:
           CTXFLOW_HOST: ../dist/index.mjs

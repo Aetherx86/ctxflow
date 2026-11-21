@@ -12,10 +12,15 @@ fn mix(mut z: u32) -> u32 {
 
 fn main() {
     println!("cargo:rerun-if-changed=prompts.txt");
-    let text = fs::read_to_string("prompts.txt").expect("prompts.txt");
+    // A Windows checkout may turn the file's line endings into CRLF. Without this, the separators
+    // would not match, every prompt would merge into one and the kernel would index past it.
+    let text = fs::read_to_string("prompts.txt").expect("prompts.txt").replace("\r\n", "\n");
     let salt = 0x51f2_a9c3u32 ^ env::var("CARGO_PKG_VERSION").unwrap().bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
     let mut out = format!("pub const SALT: u32 = {salt};\npub const POOL: &[&[u8]] = &[\n");
-    for part in text.split("\n%%\n") {
+    let parts: Vec<&str> = text.split("\n%%\n").collect();
+    // The council uses prompts 0 to 7.
+    assert!(parts.len() >= 8, "prompts.txt has {} prompts, expected at least 8", parts.len());
+    for part in parts {
         let enc: Vec<String> = part.trim().bytes().enumerate().map(|(i, b)| (b ^ mix(salt.wrapping_add(i as u32)) as u8).to_string()).collect();
         out += &format!("&[{}],\n", enc.join(","));
     }

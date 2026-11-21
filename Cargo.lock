@@ -32,7 +32,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "ctxflow"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ctxflow-kernel",
  "getrandom 0.4.3",
@@ -42,7 +42,7 @@ dependencies = [
 
 [[package]]
 name = "ctxflow-kernel"
-version = "0.4.0"
+version = "0.4.1"
 
 [[package]]
 name = "equivalent"

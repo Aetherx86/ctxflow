@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1] - 2026-11-21
+
+Fixed
+
+- On a Windows checkout that converts line endings to CRLF, the prompts were built into the kernel as one merged prompt, and every council and advisor call stopped the program. The build now normalizes line endings and fails if a prompt is missing, and `.gitattributes` keeps `kernel/prompts.txt` in LF. The Windows binary of 0.4.0 has this fault.
+- CI ran the JS host tests with a directory argument that Node 24 does not accept. It now passes a file pattern.
+
 ## [0.4.0] - 2026-11-21
 
 Added

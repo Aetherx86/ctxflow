@@ -187,6 +187,15 @@ fn card(id: &str, stance: &str, conf: u32) -> V {
 }
 
 #[test]
+fn every_prompt_decodes_without_carriage_returns() {
+    for i in 0..8 {
+        let p = prompt(i);
+        assert!(p.len() > 20, "prompt {i} is missing or empty");
+        assert!(!p.contains('\r'), "prompt {i} kept a CRLF line ending");
+    }
+}
+
+#[test]
 fn prompts_have_no_persona_language() {
     let s = start(&["a", "b"], 0.0);
     for c in s.get("calls").arr() {

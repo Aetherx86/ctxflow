@@ -173,6 +173,10 @@ JS 호스트를 다시 빌드하려면 sentinel-kit의 `tools/obfuscate.mjs`가 
 
 독립 답변, 익명 평가, 최종 합성으로 이어지는 council 구조는 [karpathy/llm-council](https://github.com/karpathy/llm-council)의 아이디어입니다. 라이선스가 없는 저장소라 코드는 가져오지 않았습니다.
 
+## 0.4.1 변경 사항
+
+- 줄 끝이 CRLF로 바뀐 Windows 체크아웃에서 프롬프트가 하나로 합쳐져 council과 advisor 호출이 멈추던 문제를 고쳤습니다. 0.4.0의 Windows 바이너리에 이 문제가 있습니다.
+
 ## 0.4.0 변경 사항
 
 - `[council.weights]`로 근거(evidence), 위험(risk), 실현 가능성(feasibility) 점수의 가중치를 정합니다. 기본값은 1, 최대 100입니다. 결과에는 가중 점수, 쌍대 비교 승수, 평가자 간 일치율(`agreement`), 모든 답을 일대일로 이기는 답(`condorcet_winner`)이 함께 나옵니다. 이 값은 보고용이며 중단과 최종 모델 호출 규칙은 그대로입니다.
