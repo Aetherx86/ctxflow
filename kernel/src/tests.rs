@@ -421,7 +421,7 @@ fn fuzz_dispatch_never_panics() {
         seed ^= seed << 17;
         seed
     };
-    let ops = ["estimate", "compress", "anchors", "verify_summary", "error_sig", "redact", "sanitize", "gate", "brief", "council_step", "advisor_system", "version", "nope"];
+    let ops = ["estimate", "compress", "expand", "anchors", "verify_summary", "error_sig", "redact", "unredact", "sanitize", "gate", "brief", "preflight", "council_step", "advisor_system", "version", "nope"];
     let pieces = ["{", "}", "[", "]", "\"", ":", ",", "\\", "\\u", "d83d", "null", "true", "1e999", "-", "0", "\"op\"", "\"text\"", "\"state\"", "\"start\"", "\"seats\"", "\"results\"", "\u{202E}", "\u{E0041}", "```", "\n", "ERROR", "#", "sk-ant-", "가", "😀", "\x00", "\x1b["];
     let started = std::time::Instant::now();
     for i in 0..20_000 {
@@ -441,4 +441,307 @@ fn fuzz_dispatch_never_panics() {
         assert!(parse(&out).is_some(), "invalid JSON out for {input:?}: {out}");
     }
     assert!(started.elapsed() < std::time::Duration::from_secs(60));
+}
+
+
+#[test]
+fn json_surrogates_and_large_floats_are_safe() {
+    // Valid astral pair (U+1F600)
+    assert_eq!(parse(r#""\uD83D\uDE00""#).unwrap().s(), "😀");
+    // Lone high surrogate at EOF must not fail to parse or panic
+    assert_eq!(parse(r#""\uD83D""#).unwrap().s(), "\u{FFFD}");
+    // High surrogate followed by ordinary BMP escape must NOT swallow the BMP char
+    assert_eq!(parse(r#""\uD83D\u0041""#).unwrap().s(), "\u{FFFD}A");
+    // Negative zero formats cleanly as 0; huge finite float > 2^53 stays valid JSON without i64 saturation corruption
+    assert_eq!(V::Num(-0.0).dump(), "0");
+    let big = 9_223_372_036_854_775_808.0f64; // 2^63
+    let dumped = V::Num(big).dump();
+    assert_ne!(dumped, "9223372036854775807", "must not silently subtract 1 via i64 saturation");
+    assert!(parse(&dumped).is_some());
+}
+
+#[test]
+fn redact_catches_multiple_secrets_per_line_and_deduplicates() {
+    let t = "API_KEY=alpha12345678 SECRET=beta9876543210 API_KEY=alpha12345678\nAuthorization: Bearer tok_first_1234567890 fallback Bearer tok_second_9876543210\nwhsec_0123456789abcdef1234 a@example.com and a@example.com"; // repo-guard: allow fake test secrets
+    let (r, m) = redact(t);
+    for gone in ["alpha12345678", "beta9876543210", "tok_first_1234567890", "tok_second_9876543210", "whsec_0123456789", "a@example.com"] {
+        assert!(!r.contains(gone), "{gone} leaked: {r}");
+    }
+    // alpha12345678 and a@example.com were each deduplicated to a single placeholder
+    assert_eq!(m.len(), 6, "expected 6 unique redacted values, got {m:?}");
+    let (restored, count) = unredact(&r, &m);
+    assert_eq!(restored, t);
+    assert_eq!(count, 8, "6 unique secrets across 8 occurrences");
+}
+
+#[test]
+fn unredact_handles_prefix_collisions_and_injection_safely() {
+    let mut map = Vec::new();
+    for i in 1..=12 {
+        map.push(obj(vec![("mark", st(&format!("[REDACTED_{i}]"))), ("value", st(&format!("val_{i}")))]));
+    }
+    // Hostile value that itself contains another placeholder must not trigger recursive expansion
+    map.push(obj(vec![("mark", st("[REDACTED_A]")), ("value", st("literal [REDACTED_1]"))]));
+    let text = "a=[REDACTED_1] b=[REDACTED_10] c=[REDACTED_12] d=[REDACTED_A]";
+    let res = run(&obj(vec![("op", st("unredact")), ("text", st(text)), ("map", V::Arr(map))]).dump());
+    assert_eq!(res.get("text").s(), "a=val_1 b=val_10 c=val_12 d=literal [REDACTED_1]");
+    assert_eq!(res.get("restored").n(0.0), 4.0);
+}
+
+#[test]
+fn expand_rehydrates_stubs_handles_cycles_and_filters() {
+    let code: String = (0..25).map(|i| format!("let v{i} = {i};\n")).collect();
+    let block = format!("```rs\nfn demo() {{\n{code}}}\n```");
+    let orig = format!("before\n{block}\nmiddle\n{block}\nafter");
+    let c = compress(&orig, 12, 6);
+    assert_eq!(c.stubs.len(), 1);
+    let id = c.stubs[0].get("id").s().to_string();
+    let archive = obj(vec![(id.as_str(), st(&block))]);
+    let e = run(&obj(vec![("op", st("expand")), ("text", st(&c.text)), ("archive", archive.clone())]).dump());
+    assert_eq!(e.get("text").s(), orig, "expand must restore both stub and [same as #id]");
+    assert_eq!(e.get("expanded").arr().len(), 1);
+    assert!(e.get("missing").arr().is_empty());
+    assert_eq!(e.get("cycles").n(0.0), 0.0);
+
+    // Missing reference is preserved and reported
+    let miss = run(&obj(vec![("op", st("expand")), ("text", st("see [#deadbeef0000 code 20 lines]")), ("archive", archive.clone())]).dump());
+    assert_eq!(miss.get("text").s(), "see [#deadbeef0000 code 20 lines]");
+    assert_eq!(miss.get("missing").arr()[0].s(), "deadbeef0000");
+
+    // Selective expansion via `only`
+    let skip = run(&obj(vec![("op", st("expand")), ("text", st(&c.text)), ("archive", archive), ("only", V::Arr(vec![st("other0000000")]))]).dump());
+    assert_eq!(skip.get("text").s(), c.text);
+
+    // Mutual cycle terminates cleanly
+    let cyc_archive = obj(vec![
+        ("aaaaaaaaaaaa", st("A -> [#bbbbbbbbbbbb code 20 lines]")),
+        ("bbbbbbbbbbbb", st("B -> [#aaaaaaaaaaaa code 20 lines]")),
+    ]);
+    let cyc = run(&obj(vec![("op", st("expand")), ("text", st("[#aaaaaaaaaaaa code 20 lines]")), ("archive", cyc_archive)]).dump());
+    assert!(cyc.get("cycles").n(0.0) >= 1.0);
+    assert!(cyc.get("text").s().contains("A -> B -> [#aaaaaaaaaaaa"));
+}
+
+#[test]
+fn compress_detects_rust_go_traces_and_verify_summary_reports_retention() {
+    let mut trace = String::from("thread 'worker' panicked at src/net.rs:42:5:\n");
+    for i in 0..20 {
+        trace += &format!("    {i}: app::frame_{i} at 0x{:x}\n", 0x1000 + i);
+    }
+    trace += "Caused by: FATAL: connection pool exhausted\n";
+    let c = compress(&trace, 12, 6);
+    assert_eq!(c.stubs.len(), 1);
+    assert!(c.text.contains("connection pool exhausted"));
+
+    let v = run(&obj(vec![
+        ("op", st("verify_summary")),
+        ("text", st("Fixed src/net.rs")),
+        ("anchors", V::Arr(vec![st("src/net.rs"), st("frame_0"), st("exhausted")])),
+    ]).dump());
+    assert_eq!(v.get("total").n(0.0), 3.0);
+    assert_eq!(v.get("retained").n(0.0), 1.0);
+    assert!((v.get("ratio").n(0.0) - (1.0 / 3.0)).abs() < 1e-6);
+    assert_eq!(v.get("missing").arr().len(), 2);
+}
+
+#[test]
+fn weighted_criteria_and_fractional_borda_and_condorcet() {
+    // Three seats: s0 has strong evidence (5) but poor risk (1); s1 has moderate evidence (3) and strong risk (5); s2 is weak (2, 2, 2).
+    // With risk weight = 3, s1 must win clearly, be the Condorcet winner, and have agreement = 1.0.
+    let seats: Vec<V> = ["a", "b", "c"].iter().enumerate().map(|(i, m)| obj(vec![
+        ("model", st(m)), ("title", st(&format!("S{i}"))), ("lens", V::Num(i as f64)), ("fallbacks", V::Arr(vec![])),
+    ])).collect();
+    let s = run(&obj(vec![("op", st("council_step")), ("start", obj(vec![
+        ("question", st("Migration strategy?")),
+        ("seats", V::Arr(seats)),
+        ("options", V::Arr(vec![])),
+        ("chair", obj(vec![("model", st("chair-m")), ("fallbacks", V::Arr(vec![]))])),
+        ("limits", obj(vec![
+            ("mode", st("auto")),
+            ("weights", obj(vec![("evidence", V::Num(1.0)), ("risk", V::Num(3.0)), ("feasibility", V::Num(1.0))])),
+        ])),
+    ]))]).dump());
+    let r = next(&s, vec![card("s0", "fast-risky", 90), card("s1", "safe-steady", 80), card("s2", "weak", 60)]);
+    let score_fn = |prev: &V, reviewer: usize| -> V {
+        let map = prev.get("state").get("maps").arr()[reviewer].arr();
+        let mut scores = Vec::new();
+        for m in map {
+            let ci = m.get("card").n(0.0) as usize;
+            let ans = prev.get("state").get("cards").arr()[ci].get("answer").s();
+            let (ev, ri, fe) = if ans.contains("fast-risky") { (5.0, 1.0, 4.0) } else if ans.contains("safe-steady") { (3.0, 5.0, 4.0) } else { (2.0, 2.0, 2.0) };
+            scores.push((m.get("label").s().to_string(), obj(vec![("evidence", V::Num(ev)), ("risk", V::Num(ri)), ("feasibility", V::Num(fe))])));
+        }
+        obj(vec![("id", st(&format!("r{reviewer}"))), ("text", st(&obj(vec![("scores", V::Obj(scores))]).dump())), ("in", V::Num(10.0)), ("out", V::Num(10.0))])
+    };
+    let d = next(&r, vec![score_fn(&r, 0), score_fn(&r, 1), score_fn(&r, 2)]);
+    assert!(d.get("done").b());
+    let res = d.get("result");
+    assert_eq!(res.get("mode").s(), "ranked");
+    assert!(res.get("final").s().contains("Use safe-steady."));
+    assert_eq!(res.get("condorcet_winner").get("model").s(), "b");
+    assert_eq!(res.get("agreement").n(0.0), 1.0);
+    assert_eq!(res.get("complete_reviewers").n(0.0), 3.0);
+    let top_row = &res.get("matrix").arr()[0];
+    assert_eq!(top_row.get("model").s(), "b");
+    assert!((top_row.get("weighted").n(0.0) - 4.4).abs() < 1e-6);
+    assert_eq!(top_row.get("spread").n(-1.0), 0.0);
+    assert_eq!(top_row.get("pairwise_wins").n(0.0), 2.0);
+}
+
+#[test]
+fn fractional_borda_eliminates_tie_position_bias() {
+    let s = start(&["a", "b", "c"], 0.0);
+    let r = next(&s, vec![card("s0", "one", 90), card("s1", "two", 80), card("s2", "three", 70)]);
+    // All reviewers give identical scores to every answer -> every answer must have exact equal Borda = 0.5
+    let rv: Vec<V> = (0..3).map(|i| review(&r, i, |_| 4, None)).collect();
+    let d = next(&r, rv);
+    let matrix = d.get("state").get("matrix").arr();
+    for row in matrix {
+        assert!((row.get("borda").n(-1.0) - 0.5).abs() < 1e-6, "tied answers must split Borda equally: {row:?}");
+    }
+    assert_eq!(d.get("state").get("condorcet_winner"), &V::Null);
+}
+
+#[test]
+fn preflight_breaks_down_stages_and_detects_non_independence() {
+    let p = run(&obj(vec![
+        ("op", st("preflight")),
+        ("question", st("Use postgres://u:supersecret@db/app\u{202E}?")),
+        ("seats", V::Arr(vec![st("ollama:auto"), st("ollama:auto")])),
+        ("mode", st("auto")),
+    ]).dump());
+    assert_eq!(p.get("distinct_models").n(0.0), 1.0);
+    assert!(!p.get("independent").b());
+    assert_eq!(p.get("hidden_removed").n(0.0), 1.0);
+    assert_eq!(p.get("redactions").n(0.0), 1.0);
+    let sum = p.get("stage1").n(0.0) + p.get("stage2").n(0.0) + p.get("stage3").n(0.0);
+    assert_eq!(sum, p.get("worst_case").n(0.0));
+
+    let fast = run(&obj(vec![
+        ("op", st("preflight")),
+        ("question", st("SQLite or Postgres?")),
+        ("seats", V::Arr(vec![st("a:1"), st("b:2")])),
+        ("mode", st("fast")),
+    ]).dump());
+    assert!(fast.get("independent").b());
+    assert_eq!(fast.get("stage2").n(-1.0), 0.0);
+    assert_eq!(fast.get("stage3").n(-1.0), 0.0);
+    assert!(fast.get("stage1").n(0.0) > 0.0);
+}
+
+#[test]
+fn council_stage2_survives_hostile_crafted_state() {
+    // seat: 0, out-of-bounds card index in maps, duplicate card index, empty cards, >26 seats
+    let crafted = obj(vec![
+        ("op", st("council_step")),
+        ("state", obj(vec![
+            ("stage", V::Num(2.0)),
+            ("question", st("q")),
+            ("question_short", st("q")),
+            ("seats", V::Arr(vec![obj(vec![("model", st("a")), ("title", st("A"))])])),
+            ("cards", V::Arr(vec![obj(vec![("seat", V::Num(0.0)), ("model", st("a")), ("answer", st("x"))])])),
+            ("maps", V::Arr(vec![V::Arr(vec![
+                obj(vec![("label", st("A")), ("card", V::Num(999.0))]),
+                obj(vec![("label", st("B")), ("card", V::Num(-5.0))]),
+                obj(vec![("label", st("C")), ("card", V::Num(0.0))]),
+                obj(vec![("label", st("C")), ("card", V::Num(0.0))]),
+            ])])),
+            ("chair", obj(vec![("model", st("z"))])),
+            ("limits", obj(vec![("weights", obj(vec![("evidence", V::Num(-1.0)), ("risk", V::Num(0.0)), ("feasibility", V::Num(0.0))]))])),
+        ])),
+        ("results", V::Arr(vec![obj(vec![("id", st("r0")), ("text", st(r#"{"scores":{"A":{"evidence":5},"C":{"evidence":4}}}"#))])])),
+    ]);
+    let out = run(&crafted.dump());
+    assert!(out.get("state").get("matrix").arr().len() == 1);
+
+    // Empty cards in stage 2
+    let empty_cards = obj(vec![
+        ("op", st("council_step")),
+        ("state", obj(vec![("stage", V::Num(2.0)), ("cards", V::Arr(vec![]))])),
+        ("results", V::Arr(vec![])),
+    ]);
+    assert_eq!(run(&empty_cards.dump()).get("result").get("mode").s(), "failed");
+
+    // >26 seats rejected cleanly
+    let many: Vec<V> = (0..30).map(|i| obj(vec![("model", st(&format!("m{i}"))), ("title", st("S"))])).collect();
+    let too_many = run(&obj(vec![("op", st("council_step")), ("start", obj(vec![("question", st("q")), ("seats", V::Arr(many))]))]).dump());
+    assert!(too_many.get("error").s().contains("26"));
+}
+
+#[test]
+fn split_pairwise_preferences_have_no_condorcet_winner_and_report_spread() {
+    // 4 seats where reviewers have cyclic/polarized preferences over s0, s1, s2 (s3 loses to all).
+    let s = start(&["a", "b", "c", "d"], 0.0);
+    let r = next(&s, vec![card("s0", "one", 90), card("s1", "two", 80), card("s2", "three", 70), card("s3", "four", 60)]);
+    // r0 (doesn't see one): two=5, three=3, four=1
+    // r1 (doesn't see two): three=5, one=3, four=1
+    // r2 (doesn't see three): one=5, two=3, four=1
+    // r3 (doesn't see four): one=5, two=4, three=2
+    let make_rev = |rev: usize, f: fn(&str) -> u32| review(&r, rev, f, None);
+    let d = next(&r, vec![
+        make_rev(0, |a| if a.contains("two") { 5 } else if a.contains("three") { 3 } else { 1 }),
+        make_rev(1, |a| if a.contains("three") { 5 } else if a.contains("one") { 3 } else { 1 }),
+        make_rev(2, |a| if a.contains("one") { 5 } else if a.contains("two") { 3 } else { 1 }),
+        make_rev(3, |a| if a.contains("one") { 5 } else if a.contains("two") { 4 } else { 2 }),
+    ]);
+    assert!(!d.get("done").b(), "split opinions must escalate to chair");
+    // "one" beats "two" 2-0 but ties "three" 1-1, so no answer beats every other one.
+    assert_eq!(d.get("state").get("condorcet_winner"), &V::Null);
+    let agr = d.get("state").get("agreement").n(-1.0);
+    assert!(agr > 0.5 && agr < 1.0, "expected partial agreement, got {agr}");
+    // Every top-3 answer got differing scores from different reviewers -> spread > 0
+    let matrix = d.get("state").get("matrix").arr();
+    assert!(matrix.iter().take(3).any(|row| row.get("spread").n(0.0) >= 2.0), "expected spread >= 2.0: {matrix:?}");
+}
+
+#[test]
+fn expand_restores_collapsed_logs_exactly() {
+    let mut t = String::from("run\n");
+    for i in 0..200 {
+        t += &format!("2026-11-07 10:00:{:02} INFO tick {i}\n", i % 60);
+    }
+    t += "2026-11-07 10:03:20 ERROR db timeout on host-3\ndone";
+    let c = compress(&t, 12, 6);
+    assert_eq!(c.stubs.len(), 1);
+    assert!(c.text.contains("(x"), "{}", c.text);
+    let archive = V::Obj(c.stubs.iter().map(|s| (s.get("id").s().to_string(), s.get("body").clone())).collect());
+    let e = run(&obj(vec![("op", st("expand")), ("text", st(&c.text)), ("archive", archive)]).dump());
+    assert_eq!(e.get("text").s(), t, "the sample lines kept after a log reference must not be duplicated");
+    assert_eq!(ref_ids(&c.text), vec![c.stubs[0].get("id").s().to_string()]);
+}
+
+#[test]
+fn expand_is_bounded_on_hostile_input() {
+    // Eight levels of 40 references each to an empty original: 40^8 walks if unbounded.
+    let ids: Vec<String> = (0..9).map(|k| format!("level{k}aaaaa")).collect();
+    let mut items: Vec<(String, V)> = Vec::new();
+    for k in 0..8 {
+        items.push((ids[k].clone(), st(&format!("[#{} code 1 lines]", ids[k + 1]).repeat(40))));
+    }
+    items.push((ids[8].clone(), st("")));
+    let started = std::time::Instant::now();
+    let e = expand(&format!("[#{} code 1 lines]", ids[0]), &V::Obj(items), &[], 8);
+    assert!(e.truncated, "the expansion budget must stop the walk");
+    // A text full of unmatched brackets stays linear.
+    let flood = "[#abcdefabcdef ".repeat(20_000);
+    let f = expand(&flood, &obj(vec![]), &[], 4);
+    assert_eq!(f.text, flood);
+    assert!(f.missing.is_empty());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+}
+
+#[test]
+fn extreme_weights_keep_scores_finite() {
+    let s = run(&obj(vec![("op", st("council_step")), ("start", obj(vec![
+        ("question", st("q")),
+        ("seats", V::Arr(["a", "b"].iter().map(|m| obj(vec![("model", st(m)), ("title", st(m))])).collect())),
+        ("chair", obj(vec![("model", st("z"))])),
+        ("limits", obj(vec![("weights", obj(vec![("evidence", V::Num(1e308)), ("risk", V::Num(1e308)), ("feasibility", V::Num(1e308))]))])),
+    ]))]).dump());
+    let r = next(&s, vec![card("s0", "one", 90), card("s1", "two", 80)]);
+    let d = next(&r, (0..2).map(|i| review(&r, i, |a| if a.contains("one") { 5 } else { 2 }, None)).collect());
+    for row in d.get("state").get("matrix").arr() {
+        assert!(row.get("weighted").n(f64::NAN).is_finite(), "{row:?}");
+    }
+    assert_eq!(d.get("state").get("matrix").arr()[0].get("model").s(), "a");
 }

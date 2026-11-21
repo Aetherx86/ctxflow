@@ -103,7 +103,7 @@ async function claudeCli(model: string, c: any, cfg: ProviderConfig, signal?: Ab
   } catch {
     throw new ProviderError('claude: models need ctxflow serve when running in a browser');
   }
-  const args = ['-p', '--output-format', 'json', '--system-prompt', c.system, '--tools', '', '--no-session-persistence', '--disable-slash-commands', '--strict-mcp-config'];
+  const args = ['-p', '--output-format', 'json', '--system-prompt', c.system, '--tools', '', '--no-session-persistence', '--disable-slash-commands', '--strict-mcp-config', '--setting-sources', 'user'];
   if (model && model !== 'default') args.push('--model', model);
   return new Promise<any>((resolve, reject) => {
     const proc = spawn(cfg.claudeBinary || 'claude', args, { stdio: ['pipe', 'pipe', 'pipe'], signal });

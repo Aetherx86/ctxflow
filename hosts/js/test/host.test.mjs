@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import http from 'node:http';
 const entry = process.env.CTXFLOW_HOST || '../src/index.ts';
-const { loadKernel, runCouncil, estimateCouncil, makeTransport, makeScrubber, parseModel, isLocalModel } = await import(entry);
+const { loadKernel, runCouncil, estimateCouncil, preflightCouncil, expandRefs, unredactText, makeTransport, makeScrubber, parseModel, isLocalModel } = await import(entry);
 const kernel = await loadKernel(fs.readFileSync(new URL('../dist/kernel.wasm', import.meta.url)));
 
 const card = (s, c = 90) => JSON.stringify({ stance: s, answer: `Use ${s}.`, confidence: c, reasons: ['r'], risks: ['x'], would_change: 'load' });
@@ -146,4 +146,78 @@ test('hidden characters in a question never reach the seats', async () => {
   for (const p of seen) {
     assert.ok(!/[\u202e]|[\u{E0000}-\u{E007F}]/u.test(p), JSON.stringify(p));
   }
+});
+
+test('preflightCouncil returns per-stage token estimates and independence flag', () => {
+  const pre = preflightCouncil(kernel, 'Use postgres://u:pass123456@db/x?', seats('a', 'b', 'c'), { mode: 'auto' });
+  assert.equal(pre.distinct_models, 3);
+  assert.equal(pre.independent, true);
+  assert.equal(pre.redactions, 1);
+  assert.equal(pre.stage1 + pre.stage2 + pre.stage3, pre.worst_case);
+  const fast = preflightCouncil(kernel, 'q', seats('a', 'a'), { mode: 'fast' });
+  assert.equal(fast.independent, false);
+  assert.equal(fast.stage2, 0);
+  assert.equal(fast.stage3, 0);
+});
+
+test('expandRefs and unredactText round-trip through WASM kernel', () => {
+  const body = '```py\n' + Array.from({ length: 20 }, (_, i) => `v${i} = ${i}`).join('\n') + '\n```';
+  const orig = `top\n${body}\nmid\n${body}\nend`;
+  const c = kernel.call('compress', { text: orig, code_max: 10, log_max: 6 });
+  assert.equal(c.stubs.length, 1);
+  const archive = Object.fromEntries(c.stubs.map((s) => [s.id, s.body]));
+  const exp = expandRefs(kernel, c.text, archive);
+  assert.equal(exp.text, orig);
+  assert.equal(exp.missing.length, 0);
+
+  const raw = 'API_KEY=alpha12345678 SECRET=beta9876543210 mail test@example.com';
+  const red = kernel.call('redact', { text: raw });
+  assert.ok(!red.text.includes('alpha12345678') && !red.text.includes('beta9876543210'));
+  const unred = unredactText(kernel, red.text, red.map);
+  assert.equal(unred.text, raw);
+  assert.equal(unred.restored, 3);
+});
+
+test('weighted criteria and Condorcet telemetry flow through WASM council', async () => {
+  const weightedTransport = async (model, call) => {
+    if (call.kind === 'card') {
+      return { text: card(model === 'a' ? 'risky' : model === 'b' ? 'safe' : 'weak'), input: 50, output: 20, local: false };
+    }
+    if (call.kind === 'review') {
+      const scores = {};
+      for (const [, l, a] of call.prompt.matchAll(/^([A-Z]): (.*)$/gm)) {
+        scores[l] = a.includes('risky')
+          ? { evidence: 5, risk: 1, feasibility: 4 }
+          : a.includes('safe')
+            ? { evidence: 3, risk: 5, feasibility: 4 }
+            : { evidence: 2, risk: 2, feasibility: 2 };
+      }
+      return { text: JSON.stringify({ scores }), input: 50, output: 20, local: false };
+    }
+    return { text: '**Decision:** chair', input: 50, output: 20, local: false };
+  };
+  const r = await runCouncil(kernel, weightedTransport, {
+    question: 'q',
+    seats: seats('a', 'b', 'c'),
+    chair: { model: 'z' },
+    limits: { weights: { evidence: 1, risk: 3, feasibility: 1 } }
+  });
+  assert.equal(r.mode, 'ranked');
+  assert.match(r.final, /Use safe\./);
+  assert.equal(r.condorcet_winner.model, 'b');
+  assert.equal(r.agreement, 1);
+  assert.equal(r.weights.risk, 3);
+});
+
+test('expandRefs restores collapsed logs and honours only', () => {
+  const lines = Array.from({ length: 120 }, (_, i) => `2026-11-21 10:00:${String(i % 60).padStart(2, '0')} INFO tick ${i}`);
+  const orig = `run\n${lines.join('\n')}\n2026-11-21 10:02:00 ERROR disk full\nnext step`;
+  const c = kernel.call('compress', { text: orig, code_max: 12, log_max: 6 });
+  assert.equal(c.stubs.length, 1);
+  assert.ok(c.text.length < orig.length / 5);
+  const archive = Object.fromEntries(c.stubs.map((s) => [s.id, s.body]));
+  assert.equal(expandRefs(kernel, c.text, archive).text, orig);
+  const skipped = expandRefs(kernel, c.text, archive, ['000000000000']);
+  assert.equal(skipped.text, c.text);
+  assert.deepEqual(skipped.expanded, []);
 });

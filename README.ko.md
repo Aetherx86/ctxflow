@@ -173,6 +173,15 @@ JS 호스트를 다시 빌드하려면 sentinel-kit의 `tools/obfuscate.mjs`가 
 
 독립 답변, 익명 평가, 최종 합성으로 이어지는 council 구조는 [karpathy/llm-council](https://github.com/karpathy/llm-council)의 아이디어입니다. 라이선스가 없는 저장소라 코드는 가져오지 않았습니다.
 
+## 0.4.0 변경 사항
+
+- `[council.weights]`로 근거(evidence), 위험(risk), 실현 가능성(feasibility) 점수의 가중치를 정합니다. 기본값은 1, 최대 100입니다. 결과에는 가중 점수, 쌍대 비교 승수, 평가자 간 일치율(`agreement`), 모든 답을 일대일로 이기는 답(`condorcet_winner`)이 함께 나옵니다. 이 값은 보고용이며 중단과 최종 모델 호출 규칙은 그대로입니다.
+- `ctxflow council --estimate [--json]`: 모델을 호출하지 않고 단계별 최대 토큰, 서로 다른 모델 수, 제거될 비밀값 수를 보여 줍니다.
+- `ctxflow stats [--days N] [--here] [--json]`: 사용 기록을 모델별, 종류별, UTC 날짜별로 집계합니다. 비용을 알려 주지 않는 제공자는 `[pricing."backend:model"]`의 `input_per_mtok`, `output_per_mtok`로 추정합니다.
+- `ctxflow expand [-f FILE] [--only ID]`: `[#id ...]` 참조를 `.ctxflow/archive`의 원본으로 되돌립니다. 원본 안의 참조도 최대 8단계까지 펼치고, 순환 참조와 출력 크기(16 MB)를 제한합니다.
+- 한 줄에 있는 모든 `NAME=value`와 `Bearer` 토큰을 가리고, 더 많은 키 형식을 인식합니다. Rust, Go 오류 출력도 로그로 압축합니다.
+- 커널 JSON 파서의 서로게이트 처리와 조작된 council 상태에 대한 방어를 고쳤습니다. WASM export는 바뀌지 않았습니다.
+
 ## 라이선스
 
 MIT

@@ -31,12 +31,18 @@ export interface Seat {
   fallbacks?: string[];
 }
 
+export interface CriterionWeights {
+  evidence?: number;
+  risk?: number;
+  feasibility?: number;
+}
+
 export interface CouncilOptions {
   question: string;
   seats: Seat[];
   chair: { model: string; fallbacks?: string[] };
   options?: string[];
-  limits?: { max_tokens?: number; agree_confidence?: number; clear_share?: number; mode?: 'fast' | 'auto' | 'thorough' };
+  limits?: { max_tokens?: number; agree_confidence?: number; clear_share?: number; mode?: 'fast' | 'auto' | 'thorough'; weights?: CriterionWeights };
   signal?: AbortSignal;
   onEvent?: (ev: any) => void;
   onUsage?: (model: string, input: number, output: number, kind: string) => void;
@@ -53,6 +59,10 @@ export function estimateCouncil(kernel: Kernel, question: string, seats: number)
     }
   });
   return probe.state.worst_case;
+}
+
+export function preflightCouncil(kernel: Kernel, question: string, seats: (string | Seat)[] | number, limits: CouncilOptions['limits'] = {}): any {
+  return kernel.call('preflight', { question, seats, mode: limits?.mode || 'auto', limits: limits || {} });
 }
 
 async function perform(call: LlmCall, transport: Transport, o: CouncilOptions): Promise<any> {

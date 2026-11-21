@@ -51,6 +51,11 @@ confirm_over = 15000                # ask first if the worst case is above this
 daily_tokens = 200000               # all cloud use per day; 0 means no limit
 agree_confidence = 70               # all models agree at this confidence: skip scoring
 clear_share = 0.75                  # this share of reviewers ranks one answer first: skip the final model
+# Optional criterion weights for anonymous scoring (default 1.0 each):
+# [council.weights]
+# evidence = 1.0
+# risk = 1.0
+# feasibility = 1.0
 
 [advisor]
 max_calls = 3                       # calls per session
@@ -163,3 +168,8 @@ rpd = 250
 [budget.models."claude:sonnet"]
 rpm = 0
 tpd = 0
+
+# Optional per-model USD rates per 1M tokens for `ctxflow stats` when a provider does not report cost_usd:
+# [pricing."gemini:gemini-3.5-flash"]
+# input_per_mtok = 0.15
+# output_per_mtok = 0.60

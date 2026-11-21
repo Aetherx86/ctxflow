@@ -24,6 +24,15 @@ pub fn prompt(i: usize) -> String {
     String::from_utf8(b).unwrap_or_default()
 }
 
+fn clamp_usize(v: &V, default: usize, max: usize) -> usize {
+    let n = v.n(default as f64);
+    if !n.is_finite() || n < 0.0 {
+        default
+    } else {
+        (n as usize).min(max)
+    }
+}
+
 pub fn dispatch(input: &str) -> String {
     let Some(i) = parse(input) else {
         return obj(vec![("error", st("kernel: invalid JSON input"))]).dump();
@@ -33,14 +42,36 @@ pub fn dispatch(input: &str) -> String {
         "version" => obj(vec![("version", st(env!("CARGO_PKG_VERSION")))]),
         "estimate" => obj(vec![("tokens", V::Num(compress::estimate(text) as f64))]),
         "compress" => {
-            let c = compress::compress(text, i.get("code_max").n(12.0) as usize, i.get("log_max").n(6.0) as usize);
+            let c = compress::compress(text, clamp_usize(i.get("code_max"), 12, 100_000), clamp_usize(i.get("log_max"), 6, 100_000));
             let (before, after) = (compress::estimate(text), compress::estimate(&c.text));
             obj(vec![("text", st(&c.text)), ("stubs", V::Arr(c.stubs)), ("before", V::Num(before as f64)), ("after", V::Num(after as f64))])
         }
-        "anchors" => obj(vec![("anchors", V::Arr(compress::anchors(text, i.get("max").n(40.0) as usize).iter().map(|a| st(a)).collect()))]),
+        "expand" => {
+            let only: Vec<String> = i.get("only").arr().iter().map(|x| x.s().to_string()).filter(|x| !x.is_empty()).collect();
+            let depth = clamp_usize(i.get("max_depth"), 4, 8);
+            let e = compress::expand(text, i.get("archive"), &only, depth);
+            obj(vec![
+                ("text", st(&e.text)),
+                ("expanded", V::Arr(e.expanded.iter().map(|x| st(x)).collect())),
+                ("missing", V::Arr(e.missing.iter().map(|x| st(x)).collect())),
+                ("cycles", V::Num(e.cycles as f64)),
+                ("truncated", V::Bool(e.truncated)),
+            ])
+        }
+        "anchors" => obj(vec![("anchors", V::Arr(compress::anchors(text, clamp_usize(i.get("max"), 40, 2000)).iter().map(|a| st(a)).collect()))]),
         "verify_summary" => {
-            let (s, m) = compress::verify_summary(text, i.get("anchors").arr());
-            obj(vec![("text", st(&s)), ("missing", V::Arr(m.iter().map(|a| st(a)).collect()))])
+            let pins = i.get("anchors").arr();
+            let total = pins.iter().filter(|p| !p.s().is_empty()).count();
+            let (s, m) = compress::verify_summary(text, pins);
+            let retained = total.saturating_sub(m.len());
+            let ratio = if total == 0 { 1.0 } else { retained as f64 / total as f64 };
+            obj(vec![
+                ("text", st(&s)),
+                ("missing", V::Arr(m.iter().map(|a| st(a)).collect())),
+                ("retained", V::Num(retained as f64)),
+                ("total", V::Num(total as f64)),
+                ("ratio", V::Num(ratio)),
+            ])
         }
         "error_sig" => obj(vec![("sig", st(&compress::error_sig(text)))]),
         "sanitize" => {
@@ -51,9 +82,14 @@ pub fn dispatch(input: &str) -> String {
             let (r, m) = compress::redact(text);
             obj(vec![("text", st(&r)), ("map", V::Arr(m))])
         }
+        "unredact" => {
+            let (r, n) = compress::unredact(text, i.get("map").arr());
+            obj(vec![("text", st(&r)), ("restored", V::Num(n as f64))])
+        }
         "gate" => gate::gate(&i),
         "brief" => gate::brief(&i),
         "advisor_system" => obj(vec![("text", st(&prompt(3)))]),
+        "preflight" => council::preflight(&i),
         "council_step" => council::step(&i),
         other => obj(vec![("error", st(&("kernel: unknown op ".to_string() + other)))]),
     };

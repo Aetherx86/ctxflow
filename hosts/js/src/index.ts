@@ -1,5 +1,5 @@
 // Public API of the JS host: load the kernel, build a transport, run a council.
-export { runCouncil, estimateCouncil } from './core/loop.ts';
+export { runCouncil, estimateCouncil, preflightCouncil } from './core/loop.ts';
 export { makeTransport, parseModel, isLocalModel, ProviderError } from './adapters/providers.ts';
 
 export async function loadKernel(bytes: BufferSource): Promise<{ call(op: string, args?: Record<string, unknown>): any }> {
@@ -28,4 +28,12 @@ export function makeScrubber(kernel: { call(op: string, args?: Record<string, un
     const b = extra ? extra(a.text) : { text: a.text, removed: 0 };
     return { text: b.text, removed: a.map.length + b.removed };
   };
+}
+
+export function expandRefs(kernel: { call(op: string, args?: Record<string, unknown>): any }, text: string, archive: Record<string, string>, only?: string[]) {
+  return kernel.call('expand', { text, archive, only: only || [] });
+}
+
+export function unredactText(kernel: { call(op: string, args?: Record<string, unknown>): any }, text: string, map: Array<{ mark: string; value: string }>) {
+  return kernel.call('unredact', { text, map });
 }

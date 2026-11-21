@@ -145,7 +145,9 @@ impl Mock {
     }
 }
 
-fn read_http(stream: &mut TcpStream) -> Option<(String, Vec<(String, String)>, Vec<u8>)> {
+type Http = (String, Vec<(String, String)>, Vec<u8>);
+
+fn read_http(stream: &mut TcpStream) -> Option<Http> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     let end = loop {
@@ -1140,4 +1142,133 @@ fn the_server_caps_idle_connections() {
     drop(held);
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(request(sv.port, "GET", "/", &[], "").0, 200, "the server recovers when they go away");
+}
+
+// ── weights, estimates, the ledger and expansion ────────────────────────────────
+
+/// "one" is strong on evidence and feasibility, "two" on risk. Equal weights favour "one".
+fn criteria_mock() -> Mock {
+    mock(|r| {
+        if r.system().contains("Score the anonymous") {
+            let mut parts = Vec::new();
+            for line in r.prompt().lines() {
+                let b = line.as_bytes();
+                if b.len() > 3 && b[0].is_ascii_uppercase() && &b[1..3] == b": " {
+                    let (e, k, f) = if line.contains("one") { (5, 2, 5) } else if line.contains("two") { (3, 5, 3) } else { (1, 1, 1) };
+                    parts.push(format!("\"{}\":{{\"evidence\":{e},\"risk\":{k},\"feasibility\":{f}}}", &line[..1]));
+                }
+            }
+            return chat(&format!("{{\"scores\":{{{}}}}}", parts.join(",")));
+        }
+        if r.system().contains("final decision") {
+            return chat("**Decision:** chair");
+        }
+        let stance = match r.model().as_str() {
+            "1" => "one",
+            "2" => "two",
+            _ => "three",
+        };
+        chat(&card(stance))
+    })
+}
+
+#[test]
+fn criterion_weights_from_the_config_change_the_winner() {
+    let m = criteria_mock();
+    let p = council_project(&m);
+    let r = result(&p.run(&["council", "--yes", "--json", "Which plan?"]));
+    assert_eq!(r.get("mode").s(), "ranked");
+    assert!(r.get("final").s().contains("Use one."), "{}", r.get("final").s());
+
+    let m = criteria_mock();
+    let p = Proj::new(&format!("{COUNCIL_CFG}\n{}\n[council.weights]\nrisk = 3\n", providers(&m.url, &["a", "b", "c", "z"])));
+    assert!(p.run(&["profile", "set", "t"]).ok);
+    let r = result(&p.run(&["council", "--yes", "--json", "Which plan?"]));
+    assert_eq!(r.get("mode").s(), "ranked");
+    assert!(r.get("final").s().contains("Use two."), "{}", r.get("final").s());
+    assert_eq!(r.get("weights").get("risk").n(0.0), 3.0);
+    assert_eq!(r.get("condorcet_winner").get("model").s(), "b:2");
+    let top = &r.get("matrix").arr()[0];
+    assert!((top.get("weighted").n(0.0) - 4.2).abs() < 1e-9, "{top:?}");
+    let text = p.run(&["council", "--yes", "Which plan?"]);
+    assert!(text.out.contains("| Weighted |"), "{}", text.out);
+    assert!(text.err.contains("b:2 beats every other answer head to head"), "{}", text.err);
+}
+
+#[test]
+fn council_estimate_calls_no_model() {
+    let m = council_mock(SPLIT, |_| 3);
+    let p = council_project(&m);
+    let r = result(&p.run(&["council", "--estimate", "--json", "Use postgres://u:hunter2secret@db/app or SQLite?"]));
+    assert_eq!(m.requests().len(), 0, "an estimate makes no calls");
+    assert_eq!(r.get("seats").n(0.0), 3.0);
+    assert_eq!(r.get("distinct_models").n(0.0), 3.0);
+    assert!(r.get("independent").b());
+    assert_eq!(r.get("redactions").n(0.0), 1.0);
+    let sum = r.get("stage1").n(0.0) + r.get("stage2").n(0.0) + r.get("stage3").n(0.0);
+    assert!(sum > 0.0 && sum == r.get("worst_case").n(-1.0));
+    assert!(p.run(&["mode", "fast"]).ok);
+    let fast = result(&p.run(&["council", "--estimate", "--json", "SQLite?"]));
+    assert_eq!(fast.get("mode").s(), "fast");
+    assert_eq!(fast.get("stage2").n(-1.0), 0.0);
+    let text = p.run(&["council", "--estimate", "SQLite?"]);
+    assert!(text.ok && text.out.contains("at most") && text.out.contains("answers"), "{}", text.out);
+    assert_eq!(m.requests().len(), 0);
+}
+
+#[test]
+fn stats_summarize_the_ledger_with_prices() {
+    let m = council_mock(SPLIT, |line| if line.contains("two") { 5 } else { 2 });
+    let p = Proj::new(&format!(
+        "{COUNCIL_CFG}\n{}\n[pricing.\"a:1\"]\ninput_per_mtok = 1000000\noutput_per_mtok = 0\n",
+        providers(&m.url, &["a", "b", "c", "z"])
+    ));
+    assert!(p.run(&["profile", "set", "t"]).ok);
+    let empty = result(&p.run(&["stats", "--json"]));
+    assert_eq!(empty.get("entries").n(-1.0), 0.0);
+    assert!(result(&p.run(&["council", "--yes", "--json", "Which DB?"])).get("mode").s() == "ranked");
+    assert!(p.run(&["ask", "hi", "--no-remember"]).ok);
+    std::fs::OpenOptions::new().append(true).open(p.home.join("usage.jsonl")).unwrap().write_all(b"garbage line\n").unwrap();
+
+    let s = result(&p.run(&["stats", "--json", "--days", "1"]));
+    // 3 answers and 3 reviews on mock providers, and one local echo call.
+    assert_eq!(s.get("entries").n(0.0), 7.0);
+    assert_eq!(s.get("cloud_calls").n(0.0), 6.0);
+    assert_eq!(s.get("local_calls").n(0.0), 1.0);
+    assert_eq!(s.get("skipped_lines").n(0.0), 1.0);
+    // a:1 answered once and reviewed once, 100 input tokens each, at one dollar per input token.
+    assert!((s.get("estimated_cost_usd").n(0.0) - 200.0).abs() < 1e-9, "{}", s.dump());
+    let kinds: Vec<String> = s.get("by_kind").arr().iter().map(|k| k.get("kind").s().to_string()).collect();
+    for k in ["council/card", "council/review"] {
+        assert!(kinds.contains(&k.to_string()), "{kinds:?}");
+    }
+    let here = result(&p.run(&["stats", "--json", "--here"]));
+    assert_eq!(here.get("entries").n(0.0), 7.0);
+    let other = Proj::new(ECHO_CFG);
+    std::fs::copy(p.home.join("usage.jsonl"), other.home.join("usage.jsonl")).unwrap();
+    assert_eq!(result(&other.run(&["stats", "--json", "--here"])).get("entries").n(-1.0), 0.0, "--here filters by project");
+    let text = p.run(&["stats"]);
+    assert!(text.ok && text.out.contains("council/review") && text.out.contains("echo:l (local)"), "{}", text.out);
+    assert!(!p.run(&["stats", "--days", "0"]).ok);
+    assert!(!p.run(&["stats", "--days", "x"]).ok);
+}
+
+#[test]
+fn expand_restores_archived_originals() {
+    let p = Proj::new(ECHO_CFG);
+    let code: String = format!("```py\n{}```", (0..40).map(|i| format!("v{i} = {i}\n")).collect::<String>());
+    assert!(p.run(&["ask", &format!("explain\n{code}\nplease")]).ok);
+    let stored = p.session().get("turns").arr()[0].get("user").s().to_string();
+    assert!(stored.contains("[#"), "{stored}");
+    let r = p.run_input(&["expand"], &stored);
+    assert!(r.ok, "{}", r.err);
+    assert_eq!(r.out, format!("explain\n{code}\nplease"));
+    let j = result(&p.run_input(&["expand", "--json"], "[#deadbeef0000 code 3 lines] and [#../../x]"));
+    assert_eq!(j.get("missing").arr().len(), 1);
+    assert_eq!(j.get("text").s(), "[#deadbeef0000 code 3 lines] and [#../../x]");
+    let id = &stored[stored.find("[#").unwrap() + 2..][..12];
+    let skip = p.run_input(&["expand", "--only", "abcdefabcdef"], &stored);
+    assert_eq!(skip.out, stored, "--only leaves other references alone");
+    let only = p.run_input(&["expand", "--only", id], &stored);
+    assert!(only.out.contains("v39 = 39"));
 }

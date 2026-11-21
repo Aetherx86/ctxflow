@@ -110,10 +110,8 @@ fn read_request(stream: &mut TcpStream) -> Option<Request> {
     let length = headers.iter().find(|(k, _)| k == "content-length").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(0);
     let mut body = buf[head_end + 4..].to_vec();
     if length > MAX_BODY {
-        return Some(Request { method, path, headers, body: Vec::new() }).filter(|_| {
-            let _ = stream.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-            false
-        });
+        let _ = stream.write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return None;
     }
     while body.len() < length {
         if Instant::now() > deadline {

@@ -1,7 +1,7 @@
 //! Council protocol as a sans-IO state machine. The host only performs the calls it is handed:
 //! start -> independent answers -> (agreement stops here) -> anonymous peer scoring -> matrix
 //! -> (clear winner stops here) -> one model resolves the disagreement.
-use crate::compress::{compress, estimate, hash_id, sanitize};
+use crate::compress::{compress, estimate, hash_id, redact, sanitize};
 use crate::json::{obj, parse_loose, st, V};
 use crate::prompt;
 use alloc::{format, string::{String, ToString}, vec, vec::Vec};
@@ -9,6 +9,9 @@ use alloc::{format, string::{String, ToString}, vec, vec::Vec};
 const CARD_TOKENS: f64 = 420.0;
 const REVIEW_TOKENS: f64 = 220.0;
 const CHAIR_TOKENS: f64 = 480.0;
+const MAX_SEATS: usize = 26;
+const EPS: f64 = 1e-9;
+const MAX_WEIGHT: f64 = 100.0;
 
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { s.chars().take(n).collect::<String>() + "..." }
@@ -104,6 +107,7 @@ fn ev(items: Vec<(&str, V)>) -> V {
     obj(items)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn call(id: &str, model: &str, fallbacks: &V, system: String, prompt: String, max: f64, seat: f64, kind: &str) -> V {
     obj(vec![("id", st(id)), ("model", st(model)), ("fallbacks", fallbacks.clone()), ("system", st(&system)), ("prompt", st(&prompt)), ("max_tokens", V::Num(max)), ("seat", V::Num(seat)), ("kind", st(kind))])
 }
@@ -118,15 +122,95 @@ fn distinct_models(cards: &[V]) -> usize {
     m.len()
 }
 
-/// Worst case if every stage runs. Shown to the user before any call is made.
-pub fn worst_case(q: &str, n: usize) -> usize {
+/// Criterion weights for the weighted score. Missing, negative or non-numeric weights count as 1,
+/// and all zero falls back to equal weights.
+fn weights_from(limits: &V) -> (f64, f64, f64) {
+    let w = limits.get("weights");
+    let pick = |k: &str| {
+        let v = w.get(k).n(1.0);
+        // Capped, so a huge weight cannot overflow the weighted score to infinity.
+        if v.is_finite() && v >= 0.0 { v.min(MAX_WEIGHT) } else { 1.0 }
+    };
+    let (e, r, f) = (pick("evidence"), pick("risk"), pick("feasibility"));
+    if e + r + f > 0.0 { (e, r, f) } else { (1.0, 1.0, 1.0) }
+}
+
+fn weights_val(w: (f64, f64, f64)) -> V {
+    obj(vec![("evidence", V::Num(w.0)), ("risk", V::Num(w.1)), ("feasibility", V::Num(w.2))])
+}
+
+/// Per-stage worst-case token breakdown: `(stage1, stage2, stage3)`.
+pub fn worst_case_breakdown(q: &str, n: usize, mode: &str) -> (usize, usize, usize) {
     let qt = estimate(q);
     let sys = estimate(&prompt(0)) + 20;
     let n1 = n.saturating_sub(1);
     let s1 = n * (qt + sys + CARD_TOKENS as usize);
+    if mode == "fast" {
+        return (s1, 0, 0);
+    }
     let s2 = n * (qt.min(700) + estimate(&prompt(1)) + n1 * CARD_TOKENS as usize + REVIEW_TOKENS as usize);
     let s3 = qt.min(700) + estimate(&prompt(2)) + 2 * CARD_TOKENS as usize + 200 + CHAIR_TOKENS as usize;
+    (s1, s2, s3)
+}
+
+/// Worst case if every stage runs. Shown to the user before any call is made.
+pub fn worst_case(q: &str, n: usize) -> usize {
+    let (s1, s2, s3) = worst_case_breakdown(q, n, "auto");
     s1 + s2 + s3
+}
+
+/// Zero-token preflight analysis: per-stage token estimates, compression, sanitization, redaction,
+/// and seat independence check.
+pub fn preflight(i: &V) -> V {
+    let raw_q = if !i.get("question").s().is_empty() { i.get("question").s() } else { i.get("text").s() };
+    let (clean_q, hidden_removed) = sanitize(raw_q);
+    let (_, rmap) = redact(&clean_q);
+    let comp = compress(&clean_q, 12, 4);
+    let mode = match i.get("mode").s() {
+        "fast" => "fast",
+        "thorough" => "thorough",
+        _ => match i.get("limits").get("mode").s() {
+            "fast" => "fast",
+            "thorough" => "thorough",
+            _ => "auto",
+        },
+    };
+    let (seat_count, distinct) = match i.get("seats") {
+        V::Arr(a) => {
+            let mut uniq: Vec<&str> = Vec::new();
+            for s in a {
+                let m = match s {
+                    V::Str(x) => x.as_str(),
+                    V::Obj(_) => s.get("model").s(),
+                    _ => "",
+                };
+                if !m.is_empty() && !uniq.contains(&m) {
+                    uniq.push(m);
+                }
+            }
+            (a.len(), uniq.len())
+        }
+        V::Num(n) if n.is_finite() && *n >= 0.0 => ((*n as usize).min(MAX_SEATS), (*n as usize).min(MAX_SEATS)),
+        _ => (2, 2),
+    };
+    let effective = seat_count.clamp(2, MAX_SEATS);
+    let (s1, s2, s3) = worst_case_breakdown(&clean_q, effective, mode);
+    let weights = weights_from(i.get("limits"));
+    obj(vec![
+        ("mode", st(mode)),
+        ("seats", V::Num(seat_count as f64)),
+        ("distinct_models", V::Num(distinct as f64)),
+        ("independent", V::Bool(distinct >= 2)),
+        ("question_tokens", V::Num(estimate(&clean_q) as f64)),
+        ("compressed_tokens", V::Num(estimate(&comp.text) as f64)),
+        ("hidden_removed", V::Num(hidden_removed as f64)),
+        ("redactions", V::Num(rmap.len() as f64)),
+        ("stage1", V::Num(s1 as f64)),
+        ("stage2", V::Num(s2 as f64)),
+        ("stage3", V::Num(s3 as f64)),
+        ("worst_case", V::Num((s1 + s2 + s3) as f64)),
+        ("weights", weights_val(weights)),
+    ])
 }
 
 fn finish(state: &mut V, events: &mut Vec<V>, mode: &str, final_text: &str, note: &str) -> V {
@@ -136,7 +220,20 @@ fn finish(state: &mut V, events: &mut Vec<V>, mode: &str, final_text: &str, note
     }
     state.set("stage", V::Num(9.0));
     let used = state.get("used").clone();
-    let result = obj(vec![("mode", st(mode)), ("final", st(&text)), ("matrix", state.get("matrix").clone()), ("used", used.clone()), ("independent_models", V::Num(distinct_models(state.get("cards").arr()) as f64)), ("calls", state.get("calls").clone()), ("worst_case", state.get("worst_case").clone())]);
+    let weights = weights_from(state.get("limits"));
+    let result = obj(vec![
+        ("mode", st(mode)),
+        ("final", st(&text)),
+        ("matrix", state.get("matrix").clone()),
+        ("used", used.clone()),
+        ("independent_models", V::Num(distinct_models(state.get("cards").arr()) as f64)),
+        ("calls", state.get("calls").clone()),
+        ("worst_case", state.get("worst_case").clone()),
+        ("condorcet_winner", state.get("condorcet_winner").clone()),
+        ("agreement", state.get("agreement").clone()),
+        ("complete_reviewers", state.get("complete_reviewers").clone()),
+        ("weights", weights_val(weights)),
+    ]);
     events.push(ev(vec![("type", st("done")), ("decree", st(&text)), ("mode", st(mode)), ("used", used)]));
     result
 }
@@ -153,6 +250,9 @@ pub fn step(i: &V) -> V {
         if seats.len() < 2 {
             return obj(vec![("error", st("a council needs at least 2 seats")), ("done", V::Bool(true))]);
         }
+        if seats.len() > MAX_SEATS {
+            return obj(vec![("error", st("a council supports at most 26 seats")), ("done", V::Bool(true))]);
+        }
         let wc = worst_case(question, seats.len());
         let budget = s.get("limits").get("max_tokens").n(0.0);
         state = s.clone();
@@ -162,6 +262,9 @@ pub fn step(i: &V) -> V {
         state.set("used", obj(vec![("in", V::Num(0.0)), ("out", V::Num(0.0))]));
         state.set("cards", V::Arr(vec![]));
         state.set("matrix", V::Arr(vec![]));
+        state.set("condorcet_winner", V::Null);
+        state.set("agreement", V::Null);
+        state.set("complete_reviewers", V::Num(0.0));
         state.set("calls", V::Num(seats.len() as f64));
         state.set("stage", V::Num(1.0));
         let opts: Vec<&str> = s.get("options").arr().iter().map(|x| x.s()).collect();
@@ -283,29 +386,62 @@ pub fn step(i: &V) -> V {
     if stage == 2 {
         let cards = state.get("cards").arr().to_vec();
         let n = cards.len();
+        if n == 0 {
+            let res = finish(&mut state, &mut events, "failed", "No model answered, so there is no decision.", "");
+            return obj(vec![("state", state), ("calls", V::Arr(calls)), ("events", V::Arr(events)), ("done", V::Bool(true)), ("result", res)]);
+        }
+        let (we, wr, wf) = weights_from(state.get("limits"));
+        let w_sum = we + wr + wf;
         let (mut ev_s, mut risk, mut feas, mut borda) = (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+        let mut weighted_sum = vec![0.0f64; n];
+        let mut min_w = vec![f64::INFINITY; n];
+        let mut max_w = vec![f64::NEG_INFINITY; n];
         let mut votes = vec![0.0f64; n];
         let mut firsts = vec![0.0f64; n];
         let mut saw = vec![0.0f64; n];
-        let mut complete = 0;
+        let mut pair_wins = vec![0u32; n * n];
+        let mut complete = 0usize;
         let mut fatal: Vec<Vec<String>> = vec![Vec::new(); n];
+        let safe_score = |v: &V| {
+            let x = v.n(3.0);
+            if x.is_finite() { x.clamp(1.0, 5.0) } else { 3.0 }
+        };
         for r in 0..n {
             let Some(res) = find(&format!("r{r}")) else { continue };
             let Some(j) = parse_loose(res.get("text").s()) else { continue };
             let map = state.get("maps").arr().get(r).map_or(&[][..], |m| m.arr());
             let mut totals: Vec<(usize, f64)> = Vec::new();
+            let mut seen_ci: Vec<usize> = Vec::new();
             for m in map {
-                let ci = m.get("card").n(0.0) as usize;
+                let raw_ci = m.get("card").n(-1.0);
+                if !raw_ci.is_finite() || raw_ci < 0.0 {
+                    continue;
+                }
+                let ci = raw_ci as usize;
+                if ci >= n || seen_ci.contains(&ci) {
+                    continue;
+                }
                 let s = j.get("scores").get(m.get("label").s());
                 if !matches!(s, V::Obj(_)) {
                     continue;
                 }
-                let g = |k: &str| s.get(k).n(3.0).clamp(1.0, 5.0);
-                ev_s[ci] += g("evidence");
-                risk[ci] += g("risk");
-                feas[ci] += g("feasibility");
+                seen_ci.push(ci);
+                let ev_v = safe_score(s.get("evidence"));
+                let ri_v = safe_score(s.get("risk"));
+                let fe_v = safe_score(s.get("feasibility"));
+                let w_score = (we * ev_v + wr * ri_v + wf * fe_v) / w_sum;
+                ev_s[ci] += ev_v;
+                risk[ci] += ri_v;
+                feas[ci] += fe_v;
+                weighted_sum[ci] += w_score;
+                if w_score < min_w[ci] {
+                    min_w[ci] = w_score;
+                }
+                if w_score > max_w[ci] {
+                    max_w[ci] = w_score;
+                }
                 votes[ci] += 1.0;
-                totals.push((ci, g("evidence") + g("risk") + g("feasibility")));
+                totals.push((ci, w_score));
                 let f = j.get("fatal").get(m.get("label").s()).s();
                 if !f.is_empty() {
                     fatal[ci].push(clean_line(f, 160));
@@ -323,35 +459,121 @@ pub fn step(i: &V) -> V {
                 for (ci, _) in &totals {
                     saw[*ci] += 1.0;
                 }
-                if totals[0].1 > totals[1].1 {
+                if totals[0].1 > totals[1].1 + EPS {
                     firsts[totals[0].0] += 1.0;
                 }
+                for a in 0..m {
+                    for b in (a + 1)..m {
+                        if totals[a].1 > totals[b].1 + EPS {
+                            pair_wins[totals[a].0 * n + totals[b].0] += 1;
+                        }
+                    }
+                }
             }
-            for (rank, (ci, _)) in totals.iter().enumerate() {
-                borda[*ci] += (m - 1 - rank) as f64;
+            // Fractional Borda: tied answers split the Borda points for their shared ranks evenly.
+            let mut idx = 0;
+            while idx < m {
+                let mut end = idx + 1;
+                while end < m && (totals[idx].1 - totals[end].1).abs() <= EPS {
+                    end += 1;
+                }
+                let avg_borda = ((m - 1 - idx) + (m - end)) as f64 / 2.0;
+                for (ci, _) in &totals[idx..end] {
+                    borda[*ci] += avg_borda;
+                }
+                idx = end;
             }
         }
-        let mut rows: Vec<(usize, f64)> = (0..n).map(|k| (k, if votes[k] > 0.0 { borda[k] / votes[k] } else { -1.0 })).collect();
-        rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(core::cmp::Ordering::Equal));
+        let mut pw_wins = vec![0usize; n];
+        let mut condorcet: Option<usize> = None;
+        let (mut agree_num, mut agree_den) = (0u64, 0u64);
+        for a in 0..n {
+            let mut beats_all = complete >= 1 && n >= 2;
+            for b in 0..n {
+                if a == b {
+                    continue;
+                }
+                let ab = pair_wins[a * n + b];
+                let ba = pair_wins[b * n + a];
+                if ab > ba {
+                    pw_wins[a] += 1;
+                } else {
+                    beats_all = false;
+                }
+                if a < b && ab + ba > 0 {
+                    agree_num += ab.max(ba) as u64;
+                    agree_den += (ab + ba) as u64;
+                }
+            }
+            if beats_all {
+                condorcet = Some(a);
+            }
+        }
+        let agreement = if agree_den > 0 { Some(agree_num as f64 / agree_den as f64) } else { None };
+
+        let mut rows: Vec<(usize, f64, f64)> = (0..n)
+            .map(|k| {
+                if votes[k] > 0.0 {
+                    (k, borda[k] / votes[k], weighted_sum[k] / votes[k])
+                } else {
+                    (k, -1.0, -1.0)
+                }
+            })
+            .collect();
+        rows.sort_by(|a, b| {
+            let bd = b.1 - a.1;
+            if bd.abs() > EPS {
+                return bd.partial_cmp(&0.0).unwrap_or(core::cmp::Ordering::Equal);
+            }
+            let wd = b.2 - a.2;
+            if wd.abs() > EPS {
+                return wd.partial_cmp(&0.0).unwrap_or(core::cmp::Ordering::Equal);
+            }
+            fatal[a.0].len().cmp(&fatal[b.0].len()).then_with(|| {
+                cards[b.0].get("confidence").n(0.0).partial_cmp(&cards[a.0].get("confidence").n(0.0)).unwrap_or(core::cmp::Ordering::Equal)
+            })
+        });
         let mut matrix: Vec<V> = Vec::new();
         let mut md = String::from("| Rank | Seat | Answer | Evidence | Risks | Feasible | Borda | Flaws |\n|---|---|---|---|---|---|---|---|\n");
-        for (rank, (k, b)) in rows.iter().enumerate() {
+        for (rank, (k, b, w_avg)) in rows.iter().enumerate() {
             let v = votes[*k].max(1.0);
             let c = &cards[*k];
             let seat = c.get("seat").n(0.0);
-            let title = seats.get(seat as usize - 1).map_or("", |s| s.get("title").s());
+            let title = (seat as usize).checked_sub(1).and_then(|idx| seats.get(idx)).map_or("", |s| s.get("title").s());
             let scored = votes[*k] > 0.0;
             // An answer nobody scored has no score. Showing 0 would read as "worst".
             let cell = |x: f64, d: usize| if scored { format!("{:.*}", d, x) } else { String::from("-") };
             md += &format!("| {} | {} | {} | {} | {} | {} | {} | {} |\n", rank + 1, title, clip(c.get("answer").s(), 90).replace('|', "/").replace('\n', " "), cell(ev_s[*k] / v, 1), cell(risk[*k] / v, 1), cell(feas[*k] / v, 1), cell(*b, 2), fatal[*k].len());
             let num = |x: f64| if scored { V::Num(x) } else { V::Null };
-            matrix.push(obj(vec![("seat", V::Num(seat)), ("model", c.get("model").clone()), ("answer", c.get("answer").clone()), ("evidence", num(ev_s[*k] / v)), ("risk", num(risk[*k] / v)), ("feasibility", num(feas[*k] / v)), ("borda", num(*b)), ("fatal", V::Arr(fatal[*k].iter().map(|f| st(f)).collect()))]));
+            let spread = if scored { V::Num((max_w[*k] - min_w[*k]).max(0.0)) } else { V::Null };
+            let first_share = if saw[*k] > 0.0 { V::Num(firsts[*k] / saw[*k]) } else { V::Null };
+            matrix.push(obj(vec![
+                ("seat", V::Num(seat)),
+                ("model", c.get("model").clone()),
+                ("answer", c.get("answer").clone()),
+                ("evidence", num(ev_s[*k] / v)),
+                ("risk", num(risk[*k] / v)),
+                ("feasibility", num(feas[*k] / v)),
+                ("weighted", num(*w_avg)),
+                ("spread", spread),
+                ("borda", num(*b)),
+                ("votes", V::Num(votes[*k])),
+                ("first_share", first_share),
+                ("pairwise_wins", V::Num(pw_wins[*k] as f64)),
+                ("fatal", V::Arr(fatal[*k].iter().map(|f| st(f)).collect())),
+            ]));
         }
         let top = rows[0].0;
         // Share of the reviewers who saw the top answer and ranked it strictly first.
         let share = if saw[top] > 0.0 { firsts[top] / saw[top] } else { 0.0 };
         state.set("matrix", V::Arr(matrix));
         state.set("share", V::Num(share));
+        state.set("complete_reviewers", V::Num(complete as f64));
+        state.set("agreement", agreement.map_or(V::Null, V::Num));
+        state.set("condorcet_winner", match condorcet {
+            Some(ci) => obj(vec![("seat", cards[ci].get("seat").clone()), ("model", cards[ci].get("model").clone())]),
+            None => V::Null,
+        });
         events.push(ev(vec![("type", st("chunk")), ("seat", V::Num(5.0)), ("text", st(&md))]));
         events.push(ev(vec![("type", st("stage_end")), ("stage", V::Num(2.0)), ("content", st(&md))]));
         let chair = state.get("chair").get("model").s().to_string();
@@ -362,11 +584,11 @@ pub fn step(i: &V) -> V {
             return obj(vec![("state", state), ("calls", V::Arr(calls)), ("events", V::Arr(events)), ("done", V::Bool(true)), ("result", res)]);
         }
         let mut material = format!("QUESTION:\n{qs}\n\n");
-        for (rank, (k, _)) in rows.iter().take(2).enumerate() {
+        for (rank, (k, _, _)) in rows.iter().take(2).enumerate() {
             material += &format!("{}\n\n", card_text(&cards[*k], if rank == 0 { "Top answer" } else { "Runner-up" }));
         }
         material += &format!("SCORES:\n{md}");
-        let flaws: Vec<String> = rows.iter().take(2).flat_map(|(k, _)| fatal[*k].iter().cloned()).collect();
+        let flaws: Vec<String> = rows.iter().take(2).flat_map(|(k, _, _)| fatal[*k].iter().cloned()).collect();
         if !flaws.is_empty() {
             material += &format!("\nREPORTED FLAWS:\n- {}\n", flaws.join("\n- "));
         }

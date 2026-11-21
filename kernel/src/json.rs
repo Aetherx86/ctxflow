@@ -58,7 +58,9 @@ impl V {
             V::Num(n) => {
                 if !n.is_finite() {
                     o.push_str("null"); // JSON has no infinity, and "1e999" from a model parses to it
-                } else if *n == (*n as i64) as f64 {
+                } else if *n == 0.0 {
+                    o.push('0');
+                } else if n.abs() < 9_007_199_254_740_992.0 && *n == (*n as i64) as f64 {
                     o.push_str(&format!("{}", *n as i64));
                 } else {
                     o.push_str(&format!("{}", n));
@@ -243,10 +245,18 @@ impl P<'_> {
                         b'/' | b'\\' | b'"' => e as char,
                         b'u' => {
                             let mut u = self.hex4()?;
-                            if (0xd800..0xdc00).contains(&u) && self.b.get(self.i..self.i + 2)? == b"\\u" {
+                            if (0xd800..0xdc00).contains(&u) && self.b.get(self.i..self.i + 2) == Some(b"\\u") {
+                                let saved = self.i;
                                 self.i += 2;
-                                let l = self.hex4()?;
-                                u = 0x10000 + ((u - 0xd800) << 10) + (l.wrapping_sub(0xdc00) & 0x3ff);
+                                if let Some(l) = self.hex4() {
+                                    if (0xdc00..0xe000).contains(&l) {
+                                        u = 0x10000 + ((u - 0xd800) << 10) + (l - 0xdc00);
+                                    } else {
+                                        self.i = saved;
+                                    }
+                                } else {
+                                    self.i = saved;
+                                }
                             }
                             char::from_u32(u).unwrap_or('\u{fffd}')
                         }

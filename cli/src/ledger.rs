@@ -133,6 +133,238 @@ pub fn check(cfg: &V, spec: &str, est_input: u64, est_output: u64) -> (Option<St
     (Some(hits.into_iter().map(|(_, r)| r).collect::<Vec<_>>().join("; ")), minute_only)
 }
 
+#[derive(Clone, Default, Debug)]
+pub struct ModelStats {
+    pub calls: u64,
+    pub input: u64,
+    pub output: u64,
+    pub local: bool,
+    pub recorded_cost_usd: f64,
+    pub estimated_cost_usd: f64,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct KindStats {
+    pub calls: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct DayStats {
+    pub calls: u64,
+    pub input: u64,
+    pub output: u64,
+    pub cloud_tokens: u64,
+    pub local_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct StatsReport {
+    pub days: Option<u64>,
+    pub project: Option<String>,
+    pub entries: u64,
+    pub skipped_lines: u64,
+    pub total_in: u64,
+    pub total_out: u64,
+    pub cloud_calls: u64,
+    pub local_calls: u64,
+    pub cloud_tokens: u64,
+    pub local_tokens: u64,
+    pub recorded_cost_usd: f64,
+    pub estimated_cost_usd: f64,
+    pub by_model: BTreeMap<String, ModelStats>,
+    pub by_kind: BTreeMap<String, KindStats>,
+    pub by_day: BTreeMap<String, DayStats>,
+}
+
+impl StatsReport {
+    pub fn total_tokens(&self) -> u64 {
+        self.total_in.saturating_add(self.total_out)
+    }
+
+    pub fn total_cost_usd(&self) -> f64 {
+        self.recorded_cost_usd + self.estimated_cost_usd
+    }
+
+    pub fn to_v(&self) -> V {
+        let models: Vec<V> = self.by_model.iter().map(|(model, s)| obj(vec![
+            ("model", st(model)),
+            ("calls", V::Num(s.calls as f64)),
+            ("in", V::Num(s.input as f64)),
+            ("out", V::Num(s.output as f64)),
+            ("total", V::Num((s.input + s.output) as f64)),
+            ("local", V::Bool(s.local)),
+            ("recorded_cost_usd", V::Num(s.recorded_cost_usd)),
+            ("estimated_cost_usd", V::Num(s.estimated_cost_usd)),
+            ("cost_usd", V::Num(s.recorded_cost_usd + s.estimated_cost_usd)),
+        ])).collect();
+        let kinds: Vec<V> = self.by_kind.iter().map(|(kind, s)| obj(vec![
+            ("kind", st(kind)),
+            ("calls", V::Num(s.calls as f64)),
+            ("in", V::Num(s.input as f64)),
+            ("out", V::Num(s.output as f64)),
+            ("total", V::Num((s.input + s.output) as f64)),
+            ("cost_usd", V::Num(s.cost_usd)),
+        ])).collect();
+        let daily: Vec<V> = self.by_day.iter().map(|(day, s)| obj(vec![
+            ("date", st(day)),
+            ("calls", V::Num(s.calls as f64)),
+            ("in", V::Num(s.input as f64)),
+            ("out", V::Num(s.output as f64)),
+            ("cloud_tokens", V::Num(s.cloud_tokens as f64)),
+            ("local_tokens", V::Num(s.local_tokens as f64)),
+            ("cost_usd", V::Num(s.cost_usd)),
+        ])).collect();
+        obj(vec![
+            ("days", self.days.map_or(V::Null, |d| V::Num(d as f64))),
+            ("project", self.project.as_deref().map_or(V::Null, st)),
+            ("entries", V::Num(self.entries as f64)),
+            ("skipped_lines", V::Num(self.skipped_lines as f64)),
+            ("in", V::Num(self.total_in as f64)),
+            ("out", V::Num(self.total_out as f64)),
+            ("total_tokens", V::Num(self.total_tokens() as f64)),
+            ("cloud_calls", V::Num(self.cloud_calls as f64)),
+            ("local_calls", V::Num(self.local_calls as f64)),
+            ("cloud_tokens", V::Num(self.cloud_tokens as f64)),
+            ("local_tokens", V::Num(self.local_tokens as f64)),
+            ("recorded_cost_usd", V::Num(self.recorded_cost_usd)),
+            ("estimated_cost_usd", V::Num(self.estimated_cost_usd)),
+            ("total_cost_usd", V::Num(self.total_cost_usd())),
+            ("by_model", V::Arr(models)),
+            ("by_kind", V::Arr(kinds)),
+            ("by_day", V::Arr(daily)),
+        ])
+    }
+}
+
+fn nonneg_u64(v: &V) -> u64 {
+    let n = v.n(0.0);
+    if n.is_finite() && n > 0.0 { n as u64 } else { 0 }
+}
+
+fn nonneg_f64(v: &V) -> Option<f64> {
+    if let V::Num(n) = v {
+        if n.is_finite() && *n >= 0.0 {
+            return Some(*n);
+        }
+    }
+    None
+}
+
+fn pricing_cost(cfg: &V, spec: &str, input: u64, output: u64) -> f64 {
+    let p = cfg.get("pricing").get(spec);
+    if !matches!(p, V::Obj(_)) {
+        return 0.0;
+    }
+    let in_rate = nonneg_f64(p.get("input_per_mtok")).unwrap_or(0.0);
+    let out_rate = nonneg_f64(p.get("output_per_mtok")).unwrap_or(0.0);
+    (input as f64 * in_rate + output as f64 * out_rate) / 1_000_000.0
+}
+
+fn utc_day_string(ts: f64) -> String {
+    let z = (ts as i64).div_euclid(86400);
+    let (y, m, d) = civil_from_days(z);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// Aggregates JSONL ledger text. Malformed lines and negative/non-finite fields are skipped safely.
+pub fn summarize_text(text: &str, cfg: &V, now_ts: f64, days: Option<u64>, project_filter: Option<&str>) -> StatsReport {
+    let cutoff = days.map(|d| now_ts - (d as f64) * 86400.0);
+    let mut rep = StatsReport { days, project: project_filter.map(str::to_string), ..StatsReport::default() };
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some(e) = parse(line) else {
+            rep.skipped_lines += 1;
+            continue;
+        };
+        if !matches!(e, V::Obj(_)) {
+            rep.skipped_lines += 1;
+            continue;
+        }
+        let ts = e.get("ts").n(0.0);
+        if !ts.is_finite() || ts < 0.0 {
+            rep.skipped_lines += 1;
+            continue;
+        }
+        if let Some(min_ts) = cutoff {
+            if ts < min_ts {
+                continue;
+            }
+        }
+        if let Some(proj) = project_filter {
+            if e.get("project").s() != proj {
+                continue;
+            }
+        }
+        let model = e.get("model").s();
+        if model.is_empty() {
+            rep.skipped_lines += 1;
+            continue;
+        }
+        let input = nonneg_u64(e.get("in"));
+        let output = nonneg_u64(e.get("out"));
+        let total = input.saturating_add(output);
+        let kind = match e.get("kind").s() { "" => "other", k => k };
+        let backend = model.split(':').next().unwrap_or("");
+        let local = backend == "echo" || is_local(backend, cfg);
+        let (rec_cost, est_cost) = match nonneg_f64(e.get("cost_usd")) {
+            Some(c) => (c, 0.0),
+            None => (0.0, if local { 0.0 } else { pricing_cost(cfg, model, input, output) }),
+        };
+        let entry_cost = rec_cost + est_cost;
+
+        rep.entries += 1;
+        rep.total_in = rep.total_in.saturating_add(input);
+        rep.total_out = rep.total_out.saturating_add(output);
+        rep.recorded_cost_usd += rec_cost;
+        rep.estimated_cost_usd += est_cost;
+        if local {
+            rep.local_calls += 1;
+            rep.local_tokens = rep.local_tokens.saturating_add(total);
+        } else {
+            rep.cloud_calls += 1;
+            rep.cloud_tokens = rep.cloud_tokens.saturating_add(total);
+        }
+
+        let mb = rep.by_model.entry(model.to_string()).or_default();
+        mb.calls += 1;
+        mb.input = mb.input.saturating_add(input);
+        mb.output = mb.output.saturating_add(output);
+        mb.local = local;
+        mb.recorded_cost_usd += rec_cost;
+        mb.estimated_cost_usd += est_cost;
+
+        let kb = rep.by_kind.entry(kind.to_string()).or_default();
+        kb.calls += 1;
+        kb.input = kb.input.saturating_add(input);
+        kb.output = kb.output.saturating_add(output);
+        kb.cost_usd += entry_cost;
+
+        let db = rep.by_day.entry(utc_day_string(ts)).or_default();
+        db.calls += 1;
+        db.input = db.input.saturating_add(input);
+        db.output = db.output.saturating_add(output);
+        if local {
+            db.local_tokens = db.local_tokens.saturating_add(total);
+        } else {
+            db.cloud_tokens = db.cloud_tokens.saturating_add(total);
+        }
+        db.cost_usd += entry_cost;
+    }
+    rep
+}
+
+pub fn summarize(cfg: &V, days: Option<u64>, project_filter: Option<&str>) -> StatsReport {
+    let text = fs::read_to_string(ledger_path()).unwrap_or_default();
+    summarize_text(&text, cfg, now(), days, project_filter)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,5 +402,40 @@ mod tests {
         // On the change day, midnight is under the offset before the change.
         assert_eq!(pacific_midnight(utc(2026, 3, 8, 20) as f64), utc(2026, 3, 8, 8) as f64);
         assert_eq!(pacific_midnight(utc(2026, 11, 1, 20) as f64), utc(2026, 11, 1, 7) as f64);
+    }
+
+    #[test]
+    fn summarize_aggregates_models_kinds_pricing_and_skips_garbage() {
+        let now_ts = utc(2026, 11, 21, 12) as f64;
+        let old_ts = utc(2026, 11, 1, 12) as f64;
+        let cfg = obj(vec![
+            ("pricing", obj(vec![
+                ("gemini:flash", obj(vec![("input_per_mtok", V::Num(1.0)), ("output_per_mtok", V::Num(4.0))])),
+            ])),
+        ]);
+        let lines = format!(
+            "{{\"ts\":{now_ts},\"model\":\"gemini:flash\",\"in\":1000000,\"out\":500000,\"kind\":\"ask/light\",\"project\":\"/repoA\"}}\n\
+             {{\"ts\":{now_ts},\"model\":\"claude:sonnet\",\"in\":2000,\"out\":1000,\"kind\":\"ask/heavy\",\"project\":\"/repoA\",\"cost_usd\":0.025}}\n\
+             {{\"ts\":{now_ts},\"model\":\"ollama:qwen\",\"in\":5000,\"out\":500,\"kind\":\"council/card\",\"project\":\"/repoB\"}}\n\
+             {{\"ts\":{old_ts},\"model\":\"gemini:flash\",\"in\":999,\"out\":1,\"kind\":\"ask/light\",\"project\":\"/repoA\"}}\n\
+             not json at all\n\
+             {{\"ts\":-5,\"model\":\"gemini:flash\",\"in\":10,\"out\":10}}\n"
+        );
+        let rep = summarize_text(&lines, &cfg, now_ts, Some(7), None);
+        assert_eq!(rep.entries, 3);
+        assert_eq!(rep.skipped_lines, 2);
+        assert_eq!(rep.cloud_calls, 2);
+        assert_eq!(rep.local_calls, 1);
+        assert_eq!(rep.cloud_tokens, 1_503_000);
+        assert_eq!(rep.local_tokens, 5_500);
+        assert!((rep.recorded_cost_usd - 0.025).abs() < 1e-9);
+        // 1M * $1 + 0.5M * $4 = $3.00
+        assert!((rep.estimated_cost_usd - 3.0).abs() < 1e-9);
+        assert_eq!(rep.by_day.len(), 1);
+        assert!(rep.by_day.contains_key("2026-11-21"));
+
+        let proj_only = summarize_text(&lines, &cfg, now_ts, None, Some("/repoA"));
+        assert_eq!(proj_only.entries, 3);
+        assert_eq!(proj_only.local_calls, 0);
     }
 }

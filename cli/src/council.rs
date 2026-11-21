@@ -31,6 +31,18 @@ pub fn preflight(eng: &Engine, question: &str, seats: usize) -> Preflight {
     }
 }
 
+/// The kernel's zero-call breakdown for this profile's seats: tokens per stage, whether the seats
+/// are independent models, and what sanitizing and redaction would remove from the question.
+pub fn estimate_breakdown(eng: &Engine, question: &str) -> V {
+    let (seats, _, _) = config::council_seats(&eng.cfg);
+    k("preflight", vec![
+        ("question", st(question)),
+        ("seats", str_arr(&seats)),
+        ("mode", eng.cfg.get("mode").clone()),
+        ("limits", obj(vec![("weights", eng.cfg.get("council").get("weights").clone())])),
+    ])
+}
+
 fn execute(eng: &Engine, call: &V) -> V {
     let mut errors = Vec::new();
     let id = call.get("id").s();
@@ -93,6 +105,7 @@ pub fn run(eng: &Engine, question: &str, options: &[String], on_event: &mut dyn 
             ("max_tokens", V::Num(limit as f64)),
             ("agree_confidence", c.get("agree_confidence").clone()),
             ("clear_share", c.get("clear_share").clone()),
+            ("weights", c.get("weights").clone()),
         ])),
     ]))]);
     if !step.get("error").s().is_empty() {

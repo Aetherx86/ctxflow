@@ -59,7 +59,7 @@ fn digits(b: &[u8]) -> bool {
 }
 
 fn level_prefix(t: &str) -> bool {
-    for l in ["DEBUG", "INFO", "WARNING", "WARN", "ERROR", "TRACE"] {
+    for l in ["DEBUG", "INFO", "WARNING", "WARN", "ERROR", "FATAL", "CRITICAL", "CRIT", "TRACE"] {
         if let Some(r) = t.strip_prefix(l) {
             if r.starts_with(':') || r.starts_with(' ') {
                 return true;
@@ -83,6 +83,11 @@ fn is_log(l: &str) -> bool {
     (t.starts_with("at ") && t.contains('('))
         || (t.starts_with("File \"") && t.contains(", line "))
         || t.starts_with("Traceback (most recent")
+        || (t.starts_with("thread '") && t.contains("panicked at"))
+        || t.starts_with("stack backtrace:")
+        || (t.starts_with("goroutine ") && t.contains('['))
+        || t.starts_with("--- FAIL:")
+        || t.starts_with("Caused by:")
         || (b.len() >= 10 && digits(&b[..4]) && b[4] == b'-' && digits(&b[5..7]) && b[7] == b'-' && digits(&b[8..10]))
         || level_prefix(t)
         || (t.starts_with('#') && t.contains(" 0x"))
@@ -91,7 +96,7 @@ fn is_log(l: &str) -> bool {
 
 fn is_error(l: &str) -> bool {
     let low = l.to_ascii_lowercase();
-    ["error", "exception", "panic", "failed", "fatal", "traceback"].iter().any(|k| low.contains(k))
+    ["error", "exception", "panic", "failed", "fatal", "critical", "traceback"].iter().any(|k| low.contains(k))
 }
 
 /// Replaces volatile values, so the same failure in two runs has the same signature.
@@ -310,23 +315,31 @@ fn tokenlike(b: &[u8]) -> bool {
     b.iter().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.' | b'/' | b'+' | b'='))
 }
 
+fn put_secret(secret: &str, kind: Option<&str>, map: &mut Vec<V>) -> String {
+    if let Some(m) = map.iter().find(|m| m.get("value").s() == secret) {
+        return m.get("mark").s().to_string();
+    }
+    let mark = match kind {
+        Some(k) => format!("[REDACTED_{}_{}]", k, map.len() + 1),
+        None => format!("[REDACTED_{}]", map.len() + 1),
+    };
+    map.push(obj(vec![("mark", st(&mark)), ("value", st(secret))]));
+    mark
+}
+
 /// Removes credentials and national ids before a prompt leaves the machine. Reversible by map.
 pub fn redact(t: &str) -> (String, Vec<V>) {
     const PREFIX: &[&str] = &[
-        "sk-ant-", "sk-or-", "sk-", "sk_live_", "rk_live_", "ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_",
-        "glpat-", "AIza", "ya29.", "xoxb-", "xoxp-", "xoxa-", "xapp-", "AKIA", "ASIA", "hf_", "gsk_", "npm_",
-        "pypi-", "dop_v1_", "shpat_", "eyJ",
+        "sk-ant-", "sk-or-", "sk-", "sk_live_", "rk_live_", "pk_live_", "whsec_", "ghp_", "gho_",
+        "ghs_", "ghu_", "ghr_", "github_pat_", "glpat-", "glrt-", "AIza", "ya29.", "xoxb-",
+        "xoxp-", "xoxa-", "xoxr-", "xoxe-", "xapp-", "AKIA", "ASIA", "hf_", "gsk_", "npm_",
+        "pypi-", "dop_v1_", "shpat_", "sq0atp-", "SG.", "sbp_", "eyJ",
     ];
-    const NAMES: &[&str] = &["API_KEY", "APIKEY", "API-KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "PRIVATE_KEY"];
+    const NAMES: &[&str] = &[
+        "API_KEY", "APIKEY", "API-KEY", "ACCESS_KEY", "SIGNING_KEY", "TOKEN", "SECRET",
+        "PASSWORD", "PASSWD", "PRIVATE_KEY", "PRIVATE-KEY", "CREDENTIAL",
+    ];
     let mut map: Vec<V> = Vec::new();
-    let put = |secret: &str, map: &mut Vec<V>| -> String {
-        if let Some(m) = map.iter().find(|m| m.get("value").s() == secret) {
-            return m.get("mark").s().to_string();
-        }
-        let mark = format!("[REDACTED_{}]", map.len() + 1);
-        map.push(obj(vec![("mark", st(&mark)), ("value", st(secret))]));
-        mark
-    };
     let mut o = String::new();
     let mut in_key = String::new();
     for line in t.split_inclusive('\n') {
@@ -334,7 +347,7 @@ pub fn redact(t: &str) -> (String, Vec<V>) {
         if !in_key.is_empty() || (tl.starts_with("-----BEGIN") && tl.contains("PRIVATE KEY")) {
             in_key.push_str(line);
             if tl.starts_with("-----END") {
-                let m = put(in_key.trim_end(), &mut map);
+                let m = put_secret(in_key.trim_end(), None, &mut map);
                 o.push_str(&m);
                 o.push('\n');
                 in_key.clear();
@@ -357,7 +370,7 @@ pub fn redact(t: &str) -> (String, Vec<V>) {
                 let wb = w.as_bytes();
                 let rrn = wl == 14 && wb[6] == b'-' && digits(&wb[..6]) && digits(&wb[7..]) && matches!(wb[7], b'1'..=b'8');
                 if pre || rrn {
-                    o.push_str(&put(w, &mut map));
+                    o.push_str(&put_secret(w, None, &mut map));
                     pos += wl;
                     continue;
                 }
@@ -371,16 +384,23 @@ pub fn redact(t: &str) -> (String, Vec<V>) {
         }
     }
     if !in_key.is_empty() {
-        o.push_str(&put(in_key.trim_end(), &mut map));
+        o.push_str(&put_secret(in_key.trim_end(), None, &mut map));
     }
-    // NAME=value and "Bearer x" forms: the value can have any shape.
-    let mut res = String::new();
+    // NAME=value forms: scan every match on each line so a second secret on the same line never leaks.
+    let mut named_out = String::with_capacity(o.len());
     for line in o.split_inclusive('\n') {
         let up = line.to_ascii_uppercase();
-        let named = NAMES.iter().filter_map(|n| up.find(n).map(|i| i + n.len())).min();
-        let mut done = false;
-        if let Some(mut i) = named {
-            let b = line.as_bytes();
+        let b = line.as_bytes();
+        let mut cursor = 0;
+        while cursor < b.len() {
+            let next = NAMES
+                .iter()
+                .filter_map(|n| up[cursor..].find(n).map(|k| (cursor + k, cursor + k + n.len())))
+                .min_by_key(|x| x.0);
+            let Some((_, mut i)) = next else {
+                named_out.push_str(&line[cursor..]);
+                break;
+            };
             while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                 i += 1;
             }
@@ -388,45 +408,306 @@ pub fn redact(t: &str) -> (String, Vec<V>) {
             while j < b.len() && matches!(b[j], b' ' | b'"' | b'\'') {
                 j += 1;
             }
+            let mut replaced = false;
             if j < b.len() && matches!(b[j], b'=' | b':') {
                 j += 1;
                 while j < b.len() && matches!(b[j], b' ' | b'"' | b'\'') {
                     j += 1;
                 }
                 let mut e = j;
-                while e < b.len() && !matches!(b[e], b' ' | b'"' | b'\'' | b'\n' | b',' | b';') {
+                while e < b.len() && !matches!(b[e], b' ' | b'"' | b'\'' | b'\n' | b'\r' | b',' | b';' | b')' | b'}') {
                     e += 1;
                 }
                 let v = &line[j..e];
                 if v.len() >= 8 && !v.starts_with("[REDACTED") && !v.starts_with('$') && !v.starts_with("os.") && !v.starts_with("process.") {
-                    let m = put(v, &mut map);
-                    res.push_str(&line[..j]);
-                    res.push_str(&m);
-                    res.push_str(&line[e..]);
-                    done = true;
+                    let m = put_secret(v, None, &mut map);
+                    named_out.push_str(&line[cursor..j]);
+                    named_out.push_str(&m);
+                    cursor = e;
+                    replaced = true;
                 }
             }
-        }
-        if !done {
-            if let Some(i) = line.find("Bearer ") {
-                let s = i + 7;
-                let e = line[s..].find(|c: char| c.is_whitespace() || c == '"').map_or(line.len(), |x| s + x);
-                if e - s >= 12 && !line[s..e].starts_with("[REDACTED") {
-                    let m = put(&line[s..e], &mut map);
-                    res.push_str(&line[..s]);
-                    res.push_str(&m);
-                    res.push_str(&line[e..]);
-                    done = true;
-                }
+            if !replaced {
+                named_out.push_str(&line[cursor..i]);
+                cursor = i;
             }
         }
-        if !done {
-            res.push_str(line);
+    }
+    // "Bearer <token>" forms: scan every match on each line.
+    let mut res = String::with_capacity(named_out.len());
+    for line in named_out.split_inclusive('\n') {
+        let mut cursor = 0;
+        while let Some(rel) = line[cursor..].find("Bearer ") {
+            let s = cursor + rel + 7;
+            let e = line[s..].find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | ';')).map_or(line.len(), |x| s + x);
+            res.push_str(&line[cursor..s]);
+            if e - s >= 12 && !line[s..e].starts_with("[REDACTED") {
+                res.push_str(&put_secret(&line[s..e], None, &mut map));
+                cursor = e;
+            } else {
+                cursor = s;
+            }
         }
+        res.push_str(&line[cursor..]);
     }
     let res = url_credentials(&res, &mut map);
     let out = pii(&res, &mut map);
     (out, map)
+}
+
+/// Restores `[REDACTED_*]` placeholders using a map returned by `redact`.
+/// Single-pass and longest-mark-first so restored values cannot trigger recursive expansion or
+/// collide between `[REDACTED_1]` and `[REDACTED_10]`.
+pub fn unredact(text: &str, map: &[V]) -> (String, usize) {
+    let mut pairs: Vec<(&str, &str)> = map
+        .iter()
+        .filter_map(|m| {
+            let mark = m.get("mark").s();
+            if mark.is_empty() { None } else { Some((mark, m.get("value").s())) }
+        })
+        .collect();
+    if pairs.is_empty() || text.is_empty() {
+        return (text.to_string(), 0);
+    }
+    pairs.sort_by_key(|p| core::cmp::Reverse(p.0.len()));
+    let mut out = String::with_capacity(text.len());
+    let mut restored = 0usize;
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let mut hit = None;
+        for &(mark, val) in &pairs {
+            if b[i] == mark.as_bytes()[0] && text[i..].starts_with(mark) {
+                hit = Some((mark.len(), val));
+                break;
+            }
+        }
+        if let Some((mlen, val)) = hit {
+            out.push_str(val);
+            restored += 1;
+            i += mlen;
+        } else {
+            let ch = text[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    (out, restored)
+}
+
+const MAX_EXPAND_BYTES: usize = 16 * 1024 * 1024;
+/// References replaced in one call. An archive whose originals reference each other many times
+/// over could otherwise make a tiny input do an exponential amount of work.
+const MAX_EXPANSIONS: usize = 100_000;
+/// A reference marker is one short line. Bounding the search keeps text full of `[` linear.
+const MAX_MARKER_BYTES: usize = 4096;
+
+pub struct ExpandOut {
+    pub text: String,
+    pub expanded: Vec<String>,
+    pub missing: Vec<String>,
+    pub cycles: usize,
+    pub truncated: bool,
+}
+
+fn is_ref_id(s: &str) -> bool {
+    (6..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+struct Marker<'a> {
+    id: &'a str,
+    len: usize,
+    /// For `[#id log N lines, M distinct]`: M, the most sample lines `compress` kept after it.
+    log_samples: Option<usize>,
+}
+
+/// Parses a `[#id ...]` or `[same as #id]` reference at the start of `s`.
+fn parse_marker(s: &str) -> Option<Marker<'_>> {
+    if !s.starts_with('[') {
+        return None;
+    }
+    let close = s.bytes().take(MAX_MARKER_BYTES).position(|c| c == b']' || c == b'\n' || c == b'\r')?;
+    if s.as_bytes()[close] != b']' {
+        return None;
+    }
+    let inner = &s[1..close];
+    if let Some(rest) = inner.strip_prefix('#') {
+        let mut words = rest.split_whitespace();
+        let id = words.next()?;
+        if !is_ref_id(id) {
+            return None;
+        }
+        let log_samples = if words.next() == Some("log") {
+            let w: Vec<&str> = rest.split_whitespace().collect();
+            w.iter().position(|x| *x == "distinct").and_then(|p| p.checked_sub(1)).and_then(|p| w[p].parse().ok())
+        } else {
+            None
+        };
+        return Some(Marker { id, len: close + 1, log_samples });
+    }
+    let id = inner.strip_prefix("same as #")?.trim();
+    is_ref_id(id).then_some(Marker { id, len: close + 1, log_samples: None })
+}
+
+/// Bytes of the sample lines that `compress` kept after a log reference: lines of the original
+/// run, each optionally followed by ` (xN)`. Expanding the reference makes them redundant.
+fn log_sample_len(rest: &str, body: &str, max_lines: usize) -> usize {
+    if !rest.starts_with('\n') {
+        return 0;
+    }
+    let lines: BTreeSet<&str> = body.split('\n').collect();
+    let mut skip = 0;
+    for _ in 0..max_lines {
+        let Some(tail) = rest[skip..].strip_prefix('\n') else { break };
+        let line = tail.split('\n').next().unwrap_or("");
+        let base = match line.rfind(" (x") {
+            Some(p) if line.ends_with(')') && line[p + 3..line.len() - 1].bytes().all(|c| c.is_ascii_digit()) && line.len() > p + 4 => &line[..p],
+            _ => line,
+        };
+        if line.is_empty() || !(lines.contains(base) || lines.contains(line)) {
+            break;
+        }
+        skip += 1 + line.len();
+    }
+    skip
+}
+
+struct Expander<'a> {
+    archive: &'a V,
+    only: &'a [String],
+    limit_depth: usize,
+    visiting: Vec<String>,
+    expanded: Vec<String>,
+    missing: Vec<String>,
+    cycles: usize,
+    budget: usize,
+    truncated: bool,
+    out: String,
+}
+
+impl<'a> Expander<'a> {
+    fn lookup(&self, id: &str) -> Option<&'a str> {
+        let archive: &'a V = self.archive;
+        match archive.get(id) {
+            V::Str(s) => Some(s.as_str()),
+            _ => match archive.get(&format!("#{id}")) {
+                V::Str(s) => Some(s.as_str()),
+                _ => None,
+            },
+        }
+    }
+
+    fn push_capped(&mut self, s: &str) {
+        let room = MAX_EXPAND_BYTES.saturating_sub(self.out.len());
+        if s.len() <= room {
+            self.out.push_str(s);
+        } else {
+            let mut cut = room;
+            while !s.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.out.push_str(&s[..cut]);
+            self.truncated = true;
+        }
+    }
+
+    fn walk(&mut self, src: &str, depth: usize) {
+        let mut i = 0;
+        let mut plain = 0;
+        while i < src.len() {
+            if self.truncated {
+                return;
+            }
+            let Some(rel) = src[i..].find('[') else { break };
+            i += rel;
+            let Some(m) = parse_marker(&src[i..]) else {
+                i += 1;
+                continue;
+            };
+            let allowed = self.only.is_empty() || self.only.iter().any(|x| x.trim_start_matches('#') == m.id);
+            if !allowed {
+                i += m.len;
+                continue;
+            }
+            let Some(body) = self.lookup(m.id) else {
+                if !self.missing.iter().any(|x| x == m.id) {
+                    self.missing.push(m.id.to_string());
+                }
+                i += m.len;
+                continue;
+            };
+            if self.visiting.iter().any(|v| v == m.id) {
+                self.cycles += 1;
+                i += m.len;
+                continue;
+            }
+            if self.budget == 0 {
+                self.truncated = true;
+                i += m.len;
+                continue;
+            }
+            self.budget -= 1;
+            self.push_capped(&src[plain..i]);
+            if !self.expanded.iter().any(|x| x == m.id) {
+                self.expanded.push(m.id.to_string());
+            }
+            if depth + 1 < self.limit_depth {
+                self.visiting.push(m.id.to_string());
+                self.walk(body, depth + 1);
+                self.visiting.pop();
+            } else {
+                self.push_capped(body);
+            }
+            i += m.len;
+            if let Some(n) = m.log_samples {
+                i += log_sample_len(&src[i..], body, n);
+            }
+            plain = i;
+        }
+        if !self.truncated {
+            self.push_capped(&src[plain..]);
+        }
+    }
+}
+
+/// Rehydrates `[#id ...]` and `[same as #id]` references against an archive object (`id -> body`).
+/// Originals that contain references are expanded too, up to `max_depth` levels. A reference to an
+/// id already being expanded is a cycle and stays as it is. For a log reference, the sample lines
+/// that `compress` kept after it are dropped, as the original contains them.
+pub fn expand(text: &str, archive: &V, only: &[String], max_depth: usize) -> ExpandOut {
+    let mut x = Expander {
+        archive,
+        only,
+        limit_depth: max_depth.clamp(1, 8),
+        visiting: Vec::new(),
+        expanded: Vec::new(),
+        missing: Vec::new(),
+        cycles: 0,
+        budget: MAX_EXPANSIONS,
+        truncated: false,
+        out: String::with_capacity(text.len()),
+    };
+    x.walk(text, 0);
+    ExpandOut { text: x.out, expanded: x.expanded, missing: x.missing, cycles: x.cycles, truncated: x.truncated }
+}
+
+/// Every distinct archive id referenced as `[#id ...]` or `[same as #id]`, in order of appearance.
+pub fn ref_ids(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let mut i = 0;
+    while let Some(rel) = text[i..].find('[') {
+        i += rel;
+        match parse_marker(&text[i..]) {
+            Some(m) => {
+                if !ids.iter().any(|x| x == m.id) {
+                    ids.push(m.id.to_string());
+                }
+                i += m.len;
+            }
+            None => i += 1,
+        }
+    }
+    ids
 }
 
 /// `scheme://user:password@host`: the password goes, the rest of the address stays readable.
@@ -442,8 +723,7 @@ fn url_credentials(t: &str, map: &mut Vec<V>) -> String {
             if let Some(colon) = auth[..at].find(':') {
                 let secret = &auth[colon + 1..at];
                 if !secret.is_empty() && !secret.starts_with("[REDACTED") {
-                    let mark = format!("[REDACTED_{}]", map.len() + 1);
-                    map.push(obj(vec![("mark", st(&mark)), ("value", st(secret))]));
+                    let mark = put_secret(secret, None, map);
                     out.push_str(&auth[..colon + 1]);
                     out.push_str(&mark);
                     out.push_str(&tail[at..end]);
@@ -505,11 +785,6 @@ fn pii(t: &str, map: &mut Vec<V>) -> String {
     let b = t.as_bytes();
     let mut o = String::with_capacity(t.len());
     let mut i = 0;
-    let mark = |value: &str, kind: &str, map: &mut Vec<V>| -> String {
-        let m = format!("[REDACTED_{}_{}]", kind, map.len() + 1);
-        map.push(obj(vec![("mark", st(&m)), ("value", st(value))]));
-        m
-    };
     let word = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'%' | b'+' | b'-');
     while i < b.len() {
         let c = b[i];
@@ -528,7 +803,7 @@ fn pii(t: &str, map: &mut Vec<V>) -> String {
                 let tld = dom.rsplit('.').next().unwrap_or("");
                 if dom.contains('.') && tld.len() >= 2 && tld.bytes().all(|x| x.is_ascii_alphabetic()) {
                     let end = e + 1 + dom.len();
-                    o.push_str(&mark(&t[i..end], "EMAIL", map));
+                    o.push_str(&put_secret(&t[i..end], Some("EMAIL"), map));
                     i = end;
                     continue;
                 }
@@ -542,7 +817,7 @@ fn pii(t: &str, map: &mut Vec<V>) -> String {
             let after = e >= b.len() || !(b[e].is_ascii_alphanumeric() || matches!(b[e], b'-' | b'_'));
             if after {
                 if let Some(kind) = number_kind(&t[i..e]) {
-                    o.push_str(&mark(&t[i..e], kind, map));
+                    o.push_str(&put_secret(&t[i..e], Some(kind), map));
                     i = e;
                     continue;
                 }

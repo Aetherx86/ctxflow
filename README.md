@@ -33,6 +33,8 @@ Set with `ctxflow mode` or the switch in the app.
 4. Code combines the scores into a matrix. If at least 75% of the reviewers rank one answer first and no fatal flaw is reported, it stops here. A reviewer counts only if it scored every answer it was shown.
 5. Otherwise a final model reads the top two answers and the scores, and decides.
 
+Each reviewer's score for an answer is the weighted mean of its evidence, risk and feasibility scores. The weights are 1 unless `[council.weights]` sets them (see [Estimates, statistics and expansion](#estimates-statistics-and-expansion)). Answers a reviewer scores equally share the rank points for their places.
+
 No model is asked to play a role. Each seat gets a list of things to check: logic, alternatives, failure modes and feasibility.
 
 ### Compression
@@ -92,6 +94,9 @@ make 2>&1 | ctxflow advise error --stdin "build failed"
 ctxflow advise done
 ctxflow scout "where are tokens refreshed?"
 ctxflow show a1b2c3d4e5f6
+ctxflow expand -f notes.md                           # put stored originals back into text
+ctxflow council --estimate "SQLite or Postgres?"     # cost per stage, no model calls
+ctxflow stats --days 7                               # calls, tokens and cost from the ledger
 ctxflow status
 ```
 
@@ -110,6 +115,71 @@ It shows state in the status line and calls `ctxflow advise` when a Bash command
 ### Skill
 
 Where a mod cannot run, `skill/token-frugal-dev` gives an agent the same rules.
+
+## Estimates, statistics and expansion
+
+Added in 0.4.0. None of these commands calls a model.
+
+### What a council would cost
+
+```bash
+ctxflow council --estimate "SQLite or Postgres for a single-user desktop app?"
+```
+
+```
+mode auto · 3 seat(s), 1 distinct model(s)
+  answers   ~2046 tokens
+  scoring   ~3780 tokens
+  decision  ~1709 tokens
+  at most   ~7535 tokens · limit 20000
+question ~13 tokens, ~13 after compression
+── one model only, so agreement would not be independent
+```
+
+This was the `local` profile, whose three seats are the same local model. `--json` prints the same as one object (`stage1`, `stage2`, `stage3`, `worst_case`, `distinct_models`, `independent`, `redactions`, `hidden_removed`, `weights`). In Fast mode only the first stage counts.
+
+### Scoring weights
+
+```toml
+[council.weights]
+evidence = 1.0
+risk = 3.0          # weigh risks three times as much as the other two
+feasibility = 1.0
+```
+
+Weights default to 1 and are capped at 100. The result of `ctxflow council --json` reports the weights used, each answer's `weighted` score, `spread` (how far reviewers disagreed on it) and `pairwise_wins`, and for the whole run `agreement` (the share of head-to-head comparisons where reviewers agree with the majority) and `condorcet_winner` (an answer that beats every other answer head to head, or `null`). These figures are reported only. When to stop and when to call the final model still follows the [modes](#modes).
+
+### Usage statistics
+
+```bash
+ctxflow stats                       # all projects, all time
+ctxflow stats --days 7 --here       # this project, last 7 days
+ctxflow stats --json
+```
+
+It reads the usage ledger in `~/.ctxflow/usage.jsonl` and totals calls, tokens and cost by model, by kind (`ask/light`, `council/review`, `scout`, ...) and by UTC day, with local models apart from cloud ones. Costs a provider reported are kept apart from estimates. For a provider that reports no cost, add rates in US dollars per million tokens:
+
+```toml
+[pricing."gemini:gemini-3.5-flash"]
+input_per_mtok = 0.15
+output_per_mtok = 0.60
+```
+
+These rates are an example: check the provider's current prices.
+
+### Putting originals back
+
+Compression replaces long code and logs with references such as `[#44542d176dc0 code:py 40 lines]`. `ctxflow expand` replaces them with the originals from `.ctxflow/archive`, from text given as an argument, with `-f FILE` or on stdin, and writes the result to stdout:
+
+```bash
+ctxflow expand -f reply.md > reply.full.md
+ctxflow expand --only 44542d176dc0 < reply.md
+ctxflow expand --json "see [#deadbeef0000 code 3 lines]"   # reports ids not in the archive
+```
+
+References inside originals are expanded too, up to 8 levels, and a reference back to an original being expanded is left as it is. For a log, the sample lines that compression kept after the reference are dropped, so the log comes back as it was. Output stops at 16 MB.
+
+The same operations are kernel ops (`preflight`, `expand`, `unredact`) and JS host exports (`preflightCouncil`, `expandRefs`, `unredactText`).
 
 ## Controlling cost
 

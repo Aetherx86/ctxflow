@@ -38,7 +38,9 @@ Ask
   prompt [MSG] [-f FILE] [--force]  print the assembled prompt without calling a model
 
 Decide
-  council [MSG] [-o OPTION]... [-y] [-v] [--json]  independent answers, anonymous scoring, one decision
+  council [MSG] [-o OPTION]... [-y] [-v] [--json] [--estimate]
+                              independent answers, anonymous scoring, one decision.
+                              --estimate prints the token cost per stage and calls no model
   advise plan|error|done|manual [MSG] [--stdin] [--auto]
                               ask the stronger model, if the gate allows it.
                               --auto stays silent in a project whose config is not trusted
@@ -46,6 +48,9 @@ Decide
 
 Keep state
   show ID                     print a stored original by id
+  expand [TEXT] [-f FILE] [--only ID]... [--json]
+                              replace [#id ...] references with the stored originals
+  stats [--days N] [--here] [--json]  calls, tokens and cost from the usage ledger
   status                      session size and token usage against budgets
   line                        one status line (no model calls)
   fold                        roll all kept turns into the summary now
@@ -375,13 +380,13 @@ fn run_council(eng: &Engine, question: &str, f: &CouncilFlags) -> R<()> {
     } else {
         say(final_text);
         if !result.get("matrix").arr().is_empty() {
-            say("\n| Model | Evidence | Risks | Feasible | Rank score | Flaws |\n|---|---|---|---|---|---|");
+            say("\n| Model | Evidence | Risks | Feasible | Weighted | Rank score | Pairwise wins | Flaws |\n|---|---|---|---|---|---|---|---|");
             for r in result.get("matrix").arr() {
                 let cell = |key: &str, digits: usize| match r.get(key) {
                     V::Num(n) => format!("{n:.digits$}"),
                     _ => "-".to_string(),
                 };
-                say(&format!("| {} | {} | {} | {} | {} | {} |", r.get("model").s(), cell("evidence", 1), cell("risk", 1), cell("feasibility", 1), cell("borda", 2), r.get("fatal").arr().len()));
+                say(&format!("| {} | {} | {} | {} | {} | {} | {} | {} |", r.get("model").s(), cell("evidence", 1), cell("risk", 1), cell("feasibility", 1), cell("weighted", 2), cell("borda", 2), cell("pairwise_wins", 0), r.get("fatal").arr().len()));
             }
         }
         let removed = result.get("redacted").n(0.0);
@@ -390,6 +395,16 @@ fn run_council(eng: &Engine, question: &str, f: &CouncilFlags) -> R<()> {
             result.get("independent_models").n(0.0), result.get("calls").n(0.0), used_in, used_out,
             if removed > 0.0 { format!(" · {removed} secret(s) removed") } else { String::new() }
         ));
+        let mut pairwise = Vec::new();
+        if let V::Num(a) = result.get("agreement") {
+            pairwise.push(format!("reviewers agree on {:.0}% of pairwise comparisons", a * 100.0));
+        }
+        if !result.get("condorcet_winner").get("model").s().is_empty() {
+            pairwise.push(format!("{} beats every other answer head to head", result.get("condorcet_winner").get("model").s()));
+        }
+        if !pairwise.is_empty() {
+            dim(&format!("── {}", pairwise.join(" · ")));
+        }
         if result.get("independent_models").n(0.0) < 2.0 && mode != "failed" {
             dim("── one model only, so this is not independent agreement");
         }
@@ -402,10 +417,137 @@ fn run_council(eng: &Engine, question: &str, f: &CouncilFlags) -> R<()> {
 }
 
 fn cmd_council(g: &Global, args: &[String]) -> R<()> {
-    let a = parse_args(args, &[("-o", "--option", true), ("-y", "--yes", false), ("-v", "--verbose", false), ("", "--json", false)])?;
+    let a = parse_args(args, &[("-o", "--option", true), ("-y", "--yes", false), ("-v", "--verbose", false), ("", "--json", false), ("", "--estimate", false)])?;
     let eng = g.engine(true)?;
     let question = read_message(&a.pos)?;
+    if a.has("--estimate") {
+        return print_estimate(&eng, &question, a.has("--json"));
+    }
     run_council(&eng, &question, &CouncilFlags { options: a.many("--option"), yes: a.has("--yes"), json: a.has("--json"), verbose: a.has("--verbose"), auto: false })
+}
+
+/// `council --estimate`: what a council would cost, stage by stage, without calling any model.
+fn print_estimate(eng: &Engine, question: &str, json: bool) -> R<()> {
+    let p = council::estimate_breakdown(eng, question);
+    if !p.get("error").s().is_empty() {
+        return Err(p.get("error").s().to_string());
+    }
+    if json {
+        say(&p.dump());
+        return Ok(());
+    }
+    let n = |key: &str| p.get(key).n(0.0) as u64;
+    say(&format!("mode {} · {} seat(s), {} distinct model(s)", p.get("mode").s(), n("seats"), n("distinct_models")));
+    say(&format!("  answers   ~{} tokens", n("stage1")));
+    say(&format!("  scoring   ~{} tokens", n("stage2")));
+    say(&format!("  decision  ~{} tokens", n("stage3")));
+    say(&format!("  at most   ~{} tokens · limit {}", n("worst_case"), eng.cfg.get("council").get("max_tokens").n(0.0) as u64));
+    say(&format!("question ~{} tokens, ~{} after compression", n("question_tokens"), n("compressed_tokens")));
+    if n("redactions") > 0 || n("hidden_removed") > 0 {
+        say(&format!("removed before sending to a cloud model: {} secret(s) or personal item(s), {} hidden character(s)", n("redactions"), n("hidden_removed")));
+    }
+    if !p.get("independent").b() {
+        dim("── one model only, so agreement would not be independent");
+    }
+    Ok(())
+}
+
+fn cmd_stats(g: &Global, args: &[String]) -> R<()> {
+    let a = parse_args(args, &[("-d", "--days", true), ("", "--here", false), ("", "--json", false)])?;
+    let days = match a.one("--days") {
+        Some(d) => Some(d.parse::<u64>().ok().filter(|d| *d > 0 && *d <= 36_500).ok_or("--days needs a whole number from 1 to 36500")?),
+        None => None,
+    };
+    let eng = g.engine(false)?;
+    let here = eng.p.root.display().to_string();
+    let rep = ledger::summarize(&eng.cfg, days, a.has("--here").then_some(here.as_str()));
+    if a.has("--json") {
+        say(&rep.to_v().dump());
+        return Ok(());
+    }
+    let scope = match (days, a.has("--here")) {
+        (Some(d), true) => format!("last {d} day(s), this project"),
+        (Some(d), false) => format!("last {d} day(s), all projects"),
+        (None, true) => "all time, this project".to_string(),
+        (None, false) => "all time, all projects".to_string(),
+    };
+    say(&format!(
+        "{scope}: {} call(s), {} cloud and {} local · in {} / out {} tokens · ${:.4} (${:.4} reported by providers, ${:.4} estimated from [pricing])",
+        rep.entries, rep.cloud_calls, rep.local_calls, rep.total_in, rep.total_out, rep.total_cost_usd(), rep.recorded_cost_usd, rep.estimated_cost_usd
+    ));
+    if rep.entries == 0 {
+        return Ok(());
+    }
+    say(&format!("\n{:<36} {:>6} {:>10} {:>10} {:>10}", "model", "calls", "in", "out", "usd"));
+    for (model, s) in &rep.by_model {
+        let name = if s.local { format!("{model} (local)") } else { model.clone() };
+        say(&format!("{:<36} {:>6} {:>10} {:>10} {:>10.4}", name, s.calls, s.input, s.output, s.recorded_cost_usd + s.estimated_cost_usd));
+    }
+    say(&format!("\n{:<36} {:>6} {:>10} {:>10} {:>10}", "kind", "calls", "in", "out", "usd"));
+    for (kind, s) in &rep.by_kind {
+        say(&format!("{:<36} {:>6} {:>10} {:>10} {:>10.4}", kind, s.calls, s.input, s.output, s.cost_usd));
+    }
+    say(&format!("\n{:<12} {:>6} {:>12} {:>12} {:>10}", "day (UTC)", "calls", "cloud tok", "local tok", "usd"));
+    for (day, s) in &rep.by_day {
+        say(&format!("{:<12} {:>6} {:>12} {:>12} {:>10.4}", day, s.calls, s.cloud_tokens, s.local_tokens, s.cost_usd));
+    }
+    if rep.skipped_lines > 0 {
+        dim(&format!("── {} unreadable ledger line(s) skipped", rep.skipped_lines));
+    }
+    Ok(())
+}
+
+/// Replaces `[#id ...]` references in text with the originals stored in this project's archive.
+fn cmd_expand(g: &Global, args: &[String]) -> R<()> {
+    let a = parse_args(args, &[("-f", "--file", true), ("", "--only", true), ("", "--json", false)])?;
+    let eng = g.engine(true)?;
+    let text = match a.one("--file") {
+        Some(f) => std::fs::read_to_string(f).map_err(|e| format!("{f}: {e}"))?,
+        None if !a.pos.is_empty() => a.pos.join(" "),
+        None if !std::io::stdin().is_terminal() => {
+            let mut bytes = Vec::new();
+            std::io::stdin().read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        None => return Err("expand needs text, -f FILE or stdin".to_string()),
+    };
+    // Collect the originals the text needs, and the ones those originals refer to, level by level.
+    let mut archive: Vec<(String, V)> = Vec::new();
+    let mut frontier = ctxflow_kernel::compress::ref_ids(&text);
+    for _ in 0..8 {
+        let mut next = Vec::new();
+        for id in frontier {
+            if archive.len() >= 4096 || archive.iter().any(|(k, _)| *k == id) {
+                continue;
+            }
+            if let Some(body) = eng.p.archive_get(&id) {
+                next.extend(ctxflow_kernel::compress::ref_ids(&body));
+                archive.push((id, V::Str(body)));
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    let only: Vec<V> = a.many("--only").iter().map(|s| V::Str(s.clone())).collect();
+    let r = util::k("expand", vec![("text", V::Str(text)), ("archive", V::Obj(archive)), ("only", V::Arr(only)), ("max_depth", V::Num(8.0))]);
+    if a.has("--json") {
+        say(&r.dump());
+        return Ok(());
+    }
+    // The text itself, unchanged around the references, so the output can be piped on.
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(r.get("text").s().as_bytes());
+    let _ = out.flush();
+    let missing = r.get("missing").arr();
+    if !missing.is_empty() {
+        dim(&format!("── not in this project's archive: {}", missing.iter().map(|m| m.s()).collect::<Vec<_>>().join(", ")));
+    }
+    if r.get("truncated").b() {
+        dim("── output truncated at the expansion limit");
+    }
+    Ok(())
 }
 
 fn cmd_trust(g: &Global, args: &[String]) -> R<()> {
@@ -665,7 +807,7 @@ fn cmd_line(g: &Global) -> R<()> {
     let s = proj.load_session();
     let daily = cfg.get("council").get("daily_tokens").n(0.0) as u64;
     let today = ledger::total_today(&cfg);
-    let pct = if daily > 0 { format!("{}%", today * 100 / daily) } else { today.to_string() };
+    let pct = today.saturating_mul(100).checked_div(daily).map_or_else(|| today.to_string(), |p| format!("{p}%"));
     let profile = match cfg.get("active_profile").s() { "" => "default", p => p };
     let trust = if cfg.get("trusted").b() { "" } else { " · not trusted" };
     say(&format!(
@@ -726,6 +868,8 @@ fn run() -> R<()> {
         "chat" => cmd_chat(&g, rest),
         "status" => cmd_status(&g),
         "show" => cmd_show(&g, rest),
+        "expand" => cmd_expand(&g, rest),
+        "stats" => cmd_stats(&g, rest),
         "council" => cmd_council(&g, rest),
         "advise" => cmd_advise(&g, rest),
         "scout" => cmd_scout(&g, rest),

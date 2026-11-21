@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.4.0] - 2026-11-21
+
+Added
+
+- Council scoring weights. `[council.weights]` in `.ctxflow/config.toml` (or `limits.weights` in the JS host) sets how much evidence, risk and feasibility count in each reviewer's score. Each weight defaults to 1 and is capped at 100; negative or non-numeric weights count as 1, and all zero falls back to equal weights.
+- Pairwise results. The council result now has `agreement`, the share of head-to-head comparisons where the reviewers agree with the majority, `condorcet_winner`, an answer that beats every other answer head to head (or `null`), `complete_reviewers` and the `weights` used. Matrix rows add `weighted`, `spread` (highest minus lowest weighted score from different reviewers), `votes`, `first_share` and `pairwise_wins`. These are reported only; the decision rules of the dial are unchanged. The CLI table shows the weighted score and pairwise wins, and the app shows agreement and the pairwise winner.
+- `ctxflow council --estimate [--json]` and the kernel op `preflight`: the worst-case tokens of each stage, the number of distinct models among the seats, and how many secrets and hidden characters would be removed from the question. No model is called. In Fast mode only the first stage counts. The JS host exports `preflightCouncil`.
+- `ctxflow expand` and the kernel op `expand`: replace `[#id ...]` and `[same as #id]` references with the stored originals, including references inside originals up to `max_depth` levels (default 4, at most 8; the CLI uses 8), with cycle detection and caps on output size (16 MB) and the number of references expanded (100,000). For a log reference, the sample lines that compression kept after it are dropped, so the original log comes back as it was. `--only ID` expands selected references. The JS host exports `expandRefs`.
+- The kernel op `unredact` and the JS export `unredactText` put redacted values back from a redaction map, in one pass, so a restored value can never be expanded again and `[REDACTED_1]` never matches inside `[REDACTED_10]`.
+- `ctxflow stats [--days N] [--here] [--json]`: calls, tokens and cost from the usage ledger, by model, by kind and by UTC day, with cloud and local use apart. Costs a provider reported are kept apart from estimates made with optional `[pricing."backend:model"]` rates (`input_per_mtok`, `output_per_mtok`). Unreadable ledger lines are counted and skipped.
+- `verify_summary` also returns `retained`, `total` and `ratio` for the identifiers kept.
+
+Changed
+
+- Redaction replaces every `NAME=value` and every `Bearer` token on a line, not only the first one. It also covers `ACCESS_KEY`, `SIGNING_KEY`, `CREDENTIAL` and `PRIVATE-KEY` names and the `pk_live_`, `whsec_`, `glrt-`, `xoxr-`, `xoxe-`, `sq0atp-`, `SG.` and `sbp_` prefixes. One value gets one placeholder everywhere it appears.
+- Log detection covers Rust panics and backtraces, Go goroutine dumps and `--- FAIL:` lines, `Caused by:` chains, and the `FATAL`, `CRITICAL` and `CRIT` levels.
+- Answers with equal scores from a reviewer now share the rank points for their places, instead of the sort order deciding. Equal Borda scores are ordered by weighted score, then by fewer reported flaws, then by confidence.
+- The JS host runs the `claude` CLI with `--setting-sources user`, as the native binary already did.
+- The kernel binary is 171 KB, up from 145 KB. Its exports (`memory`, `alloc`, `call`, `reset`) are unchanged.
+
+Fixed
+
+- A `\uD83D`-style high surrogate escape at the end of a JSON string made the whole input invalid, and one followed by an escape that is not a low surrogate swallowed that character. Both now give U+FFFD and keep the next character.
+- A crafted council state with a card index out of range or repeated, a seat number of 0 or no cards could stop the kernel. Such entries are skipped, and an empty card list ends with `failed`.
+- A council with more than 26 seats is refused, as reviewers label answers A to Z.
+- Negative or non-finite `code_max`, `log_max` and `max` values in kernel requests fall back to their defaults, and huge ones are capped.
+- The status line percentage cannot overflow.
+
 ## 0.3.0
 
 Changed
