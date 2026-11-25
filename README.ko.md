@@ -2,7 +2,7 @@
 
 여러 LLM을 쓰면서 토큰은 최소로 쓰는 도구입니다. 일상 작업은 코드와 저가 모델로 처리하고, 비용을 쓸 만한 판단에서만 상위 모델이나 여러 모델의 council을 부릅니다. 판단 로직은 WebAssembly 파일 하나에 들어 있어서 브라우저, Electron, 네이티브 바이너리에서 똑같이 동작합니다.
 
-[앱 열기](https://aetherx86.github.io/ctxflow/) · [English](README.md)
+[앱 열기](https://omakasekim.github.io/ctxflow/) · [English](README.md)
 
 ## 동작 방식
 
@@ -47,7 +47,7 @@
 
 ## 설치
 
-[Releases](https://github.com/Aetherx86/ctxflow/releases)에서 macOS, Linux, Windows용 바이너리를 받거나 직접 빌드합니다.
+[Releases](https://github.com/omakasekim/ctxflow/releases)에서 macOS, Linux, Windows용 바이너리를 받거나 직접 빌드합니다.
 
 ```bash
 scripts/install.sh      # Rust 필요, ~/.local/bin에 설치
@@ -79,7 +79,7 @@ OpenAI 호환 서비스는 `[providers.이름]`에 `base_url`과 `api_key_env`�
 ctxflow serve      # 이 컴퓨터의 키, 모델, Claude Code를 쓰는 앱을 엽니다
 ```
 
-[호스팅된 앱](https://aetherx86.github.io/ctxflow/)은 정적 파일이라 직접 올려도 됩니다. 이 경우 키는 브라우저에 머물고 각 제공자로만 전송되며, Claude 모델은 쓸 수 없습니다. HTTPS에서는 PWA로 설치할 수 있습니다.
+[호스팅된 앱](https://omakasekim.github.io/ctxflow/)은 정적 파일이라 직접 올려도 됩니다. 이 경우 키는 브라우저에 머물고 각 제공자로만 전송되며, Claude 모델은 쓸 수 없습니다. HTTPS에서는 PWA로 설치할 수 있습니다.
 
 ### CLI
 
@@ -137,7 +137,7 @@ mod를 쓸 수 없는 환경에서는 `skill/token-frugal-dev`가 에이전트�
 
 ### 난독화의 한계
 
-커널은 프롬프트를 XOR로 인코딩하고, JS 호스트는 [sentinel-kit](https://github.com/Aetherx86/sentinel-kit)의 난독화기로 빌드합니다. 빌드된 파일을 베끼기 어렵게 할 뿐입니다. 소스는 공개되어 있고, 프롬프트는 각 제공자에게 평문으로 전달됩니다.
+커널은 프롬프트를 XOR로 인코딩하고, JS 호스트는 [sentinel-kit](https://github.com/omakasekim/sentinel-kit)의 난독화기로 빌드합니다. 빌드된 파일을 베끼기 어렵게 할 뿐입니다. 소스는 공개되어 있고, 프롬프트는 각 제공자에게 평문으로 전달됩니다.
 
 ## 검증 상태
 

@@ -2,7 +2,7 @@
 
 Use several LLMs while spending as few tokens as possible. Routine work runs in code and on cheap models, and a stronger model or a council of models is called only when a decision is worth the cost. The decision logic is one WebAssembly file, so it behaves the same in a browser, in Electron and in the native binary.
 
-[Open the app](https://aetherx86.github.io/ctxflow/) · [한국어](README.ko.md)
+[Open the app](https://omakasekim.github.io/ctxflow/) · [한국어](README.ko.md)
 
 ## How it works
 
@@ -49,7 +49,7 @@ The advisor reads a capped brief instead of the conversation. If it needs more, 
 
 ## Install
 
-Download a binary from [Releases](https://github.com/Aetherx86/ctxflow/releases) for macOS, Linux or Windows, or build it:
+Download a binary from [Releases](https://github.com/omakasekim/ctxflow/releases) for macOS, Linux or Windows, or build it:
 
 ```bash
 scripts/install.sh      # needs Rust; installs to ~/.local/bin
@@ -81,7 +81,7 @@ Add any OpenAI-compatible service under `[providers.name]` with `base_url` and `
 ctxflow serve      # opens the app with this machine's keys, models and Claude Code
 ```
 
-The [hosted app](https://aetherx86.github.io/ctxflow/) is static files that you can also host yourself. There, keys stay in the browser and go only to each provider, and Claude models are not available. Over HTTPS it installs as a PWA.
+The [hosted app](https://omakasekim.github.io/ctxflow/) is static files that you can also host yourself. There, keys stay in the browser and go only to each provider, and Claude models are not available. Over HTTPS it installs as a PWA.
 
 ### CLI
 
@@ -207,7 +207,7 @@ Settings are under `[council]` and `[advisor]` in `.ctxflow/config.toml`, or Spe
 
 ### What obfuscation does not do
 
-The kernel XOR-encodes its prompts, and the JS host is built with the obfuscator from [sentinel-kit](https://github.com/Aetherx86/sentinel-kit). This slows down copying of the built files and nothing more. The source is open, and prompts reach each provider in plain text.
+The kernel XOR-encodes its prompts, and the JS host is built with the obfuscator from [sentinel-kit](https://github.com/omakasekim/sentinel-kit). This slows down copying of the built files and nothing more. The source is open, and prompts reach each provider in plain text.
 
 ## Status
 
